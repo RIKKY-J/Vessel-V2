@@ -13,7 +13,8 @@ RUN npm install
 # Copy the rest of your application's code to the working directory
 COPY . .
 
-# Build your app
+# Allocate memory for TypeScript compilation
+ENV NODE_OPTIONS="--max-old-space-size=2048"
 RUN npm run build
 
 # Expose user app (3000) and runner daemon (3001)
