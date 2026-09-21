@@ -41,10 +41,14 @@ export function verifySessionToken(token: string): UserSession | null {
 }
 
 export function getSessionCookieOptions() {
+  // Only use secure cookies if explicitly running on HTTPS (e.g. via domain/reverse-proxy)
+  // Over plain HTTP (such as http://<EC2-IP>:3000), secure: true causes browsers to reject the cookie!
+  const isSecure = process.env.COOKIE_SECURE === "true";
+
   return {
     name: SESSION_COOKIE_NAME,
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
+    secure: isSecure,
     sameSite: "lax" as const,
     path: "/",
     maxAge: 7 * 24 * 60 * 60, // 7 days

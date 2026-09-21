@@ -70,9 +70,9 @@ export default function ProjectsDashboard({ initialProjects, user }: ProjectsDas
     try {
       await axios.post("/api/auth/logout");
       localStorage.removeItem("vessel_user");
-      router.push("/signin");
+      window.location.href = "/signin";
     } catch {
-      router.push("/signin");
+      window.location.href = "/signin";
     }
   };
 

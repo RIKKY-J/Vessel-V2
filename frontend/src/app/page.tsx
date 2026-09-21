@@ -30,11 +30,7 @@ export default function HomeLandingPage() {
   }, []);
 
   const handleOpenWorkspace = () => {
-    if (user) {
-      router.push("/projects");
-    } else {
-      router.push("/signin");
-    }
+    window.location.href = user ? "/projects" : "/signin";
   };
 
   const featurePoints = [

@@ -74,8 +74,8 @@ export default function AuthPage() {
 
         setSuccessMessage("Account created! Redirecting to your workspaces...");
         setTimeout(() => {
-          router.push("/projects");
-        }, 600);
+          window.location.href = "/projects";
+        }, 500);
       } else {
         const res = await axios.post("/api/auth/login", {
           email: cleanEmail,
@@ -94,7 +94,7 @@ export default function AuthPage() {
 
         setSuccessMessage("Authenticated! Redirecting to workspaces...");
         setTimeout(() => {
-          router.push("/projects");
+          window.location.href = "/projects";
         }, 500);
       }
     } catch (err: any) {
