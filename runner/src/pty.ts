@@ -40,15 +40,31 @@ export class TerminalManager {
         });
         console.log(`[PTY] PTY created with pid=${term.pid}`);
     
-        term.on('data', (data: string) => onData(data, term.pid));
+        const termAny = term as any;
+        if (typeof termAny.onData === 'function') {
+            termAny.onData((data: string) => onData(data, term.pid));
+        } else if (typeof termAny.on === 'function') {
+            termAny.on('data', (data: string) => onData(data, term.pid));
+        }
+
         this.sessions[id] = {
             terminal: term,
             replId
         };
-        term.on('exit', (exitCode: number) => {
-            console.log(`[PTY] PTY exited for socket ${id}, pid=${term.pid}, exitCode=${exitCode}`);
-            delete this.sessions[id];
-        });
+
+        if (typeof termAny.onExit === 'function') {
+            termAny.onExit((ev: any) => {
+                const code = typeof ev === 'object' ? ev?.exitCode : ev;
+                console.log(`[PTY] PTY exited for socket ${id}, pid=${term.pid}, exitCode=${code}`);
+                delete this.sessions[id];
+            });
+        } else if (typeof termAny.on === 'function') {
+            termAny.on('exit', (exitCode: number) => {
+                console.log(`[PTY] PTY exited for socket ${id}, pid=${term.pid}, exitCode=${exitCode}`);
+                delete this.sessions[id];
+            });
+        }
+
         return term;
     }
 
