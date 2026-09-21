@@ -121,8 +121,19 @@ export default function Terminal({ socket, replId }: TerminalProps) {
     };
     window.addEventListener("resize", handleWindowResize);
 
+    let resizeObserver: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== "undefined" && terminalRef.current) {
+      resizeObserver = new ResizeObserver(() => {
+        try {
+          fitAddonRef.current?.fit();
+        } catch {}
+      });
+      resizeObserver.observe(terminalRef.current);
+    }
+
     return () => {
       window.removeEventListener("resize", handleWindowResize);
+      resizeObserver?.disconnect();
       term?.dispose();
     };
   }, []);

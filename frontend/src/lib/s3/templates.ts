@@ -144,12 +144,43 @@ if __name__ == '__main__':
 
 export async function copyTemplateToProject(language: string, replId: string): Promise<void> {
   const normLang = normalizeLanguage(language);
-  const s3 = getS3Client();
-  const bucket = getS3Bucket();
-  const sourcePrefix = `base/${normLang}/`;
-  const destPrefix = `code/${replId}/`;
 
+  // 1. Check local templates folder on disk (both ../templates and ./templates)
+  const candidateDirs = [
+    path.resolve(process.cwd(), "..", "templates", normLang),
+    path.resolve(process.cwd(), "templates", normLang),
+    path.resolve(process.cwd(), "..", "..", "templates", normLang),
+  ];
+
+  let localTemplateDir: string | null = null;
+  for (const dir of candidateDirs) {
+    if (fs.existsSync(dir)) {
+      localTemplateDir = dir;
+      break;
+    }
+  }
+
+  if (localTemplateDir) {
+    try {
+      const entries = await fs.promises.readdir(localTemplateDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isFile()) {
+          const content = await fs.promises.readFile(path.join(localTemplateDir, entry.name), "utf-8");
+          await saveProjectFile(replId, entry.name, content);
+        }
+      }
+      return;
+    } catch (diskErr) {
+      console.warn(`[Templates] Error reading from ${localTemplateDir}:`, diskErr);
+    }
+  }
+
+  // 2. Try AWS S3 base template copy
   try {
+    const s3 = getS3Client();
+    const bucket = getS3Bucket();
+    const sourcePrefix = `base/${normLang}/`;
+    const destPrefix = `code/${replId}/`;
     const list = await s3.listObjectsV2({ Bucket: bucket, Prefix: sourcePrefix }).promise();
     if (list.Contents && list.Contents.length > 0) {
       await Promise.all(
@@ -169,17 +200,17 @@ export async function copyTemplateToProject(language: string, replId: string): P
       );
       return;
     }
-  } catch (err) {
-    console.warn(`[S3] copyTemplateToProject S3 copy failed, checking local fallback:`, err);
+  } catch (err: any) {
+    console.warn(`[S3] copyTemplateToProject S3 copy failed:`, err.message);
   }
 
-  // Fallback: Populate starter files directly
+  // 3. Built-in hardcoded starter fallback
   const starters = FALLBACK_STARTERS[normLang] || FALLBACK_STARTERS["node-js"];
   for (const file of starters) {
     try {
       await saveProjectFile(replId, file.path, file.content);
     } catch (saveErr) {
-      console.warn(`[S3] Fallback save failed for ${file.path}:`, saveErr);
+      console.warn(`[Templates] Fallback save failed for ${file.path}:`, saveErr);
     }
   }
 }

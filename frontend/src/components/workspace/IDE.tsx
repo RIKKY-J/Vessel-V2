@@ -55,12 +55,19 @@ export default function IDE({ initialProject, initialFiles, user }: IDEProps) {
   const [socket, setSocket] = useState<Socket | null>(null);
   const [isSandboxReady, setIsSandboxReady] = useState(false);
   const [sandboxStatusText, setSandboxStatusText] = useState("Connecting to sandbox...");
+  const [runnerPort, setRunnerPort] = useState<number>(3001);
 
+  // Layout & Resizing States
   const [viewMode, setViewMode] = useState<ViewMode>("split");
+  const [sidebarWidth, setSidebarWidth] = useState(220);
   const [mainSplit, setMainSplit] = useState(55);
   const [rightSplit, setRightSplit] = useState(50);
+  const [isDraggingSidebar, setIsDraggingSidebar] = useState(false);
   const [isDraggingMain, setIsDraggingMain] = useState(false);
   const [isDraggingRight, setIsDraggingRight] = useState(false);
+
+  const workspaceRef = useRef<HTMLDivElement>(null);
+  const rightPaneRef = useRef<HTMLDivElement>(null);
 
   const [isRunning, setIsRunning] = useState(false);
   const [runCommand, setRunCommand] = useState(
@@ -95,6 +102,79 @@ export default function IDE({ initialProject, initialFiles, user }: IDEProps) {
     }
   }, [initialFiles]);
 
+  // Fallback client-side fetch if files were empty on mount
+  useEffect(() => {
+    if (files.length === 0 && replId) {
+      axios
+        .get(`/api/projects/${encodeURIComponent(replId)}/files`)
+        .then((res) => {
+          if (res.data?.files && res.data.files.length > 0) {
+            setFiles(res.data.files);
+            const map: Record<string, string> = {};
+            res.data.files.forEach((f: RemoteFile) => {
+              if (f.content !== undefined) map[f.path] = f.content;
+            });
+            fileContentsRef.current = { ...fileContentsRef.current, ...map };
+
+            const preferred =
+              res.data.files.find((f: RemoteFile) => f.name === "main.py" || f.name === "index.js") ||
+              res.data.files[0];
+
+            setSelectedFile({
+              id: preferred.path,
+              name: preferred.name,
+              path: preferred.path,
+              parentId: "0",
+              type: Type.FILE,
+              depth: 0,
+              content: preferred.content ?? map[preferred.path] ?? "",
+            });
+          }
+        })
+        .catch(() => {});
+    }
+  }, [replId, files.length]);
+
+  // Handle Drag Resizing across all panels
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (isDraggingSidebar) {
+        e.preventDefault();
+        const newWidth = Math.max(140, Math.min(450, e.clientX));
+        setSidebarWidth(newWidth);
+      } else if (isDraggingMain && workspaceRef.current) {
+        e.preventDefault();
+        const rect = workspaceRef.current.getBoundingClientRect();
+        const relativeX = e.clientX - rect.left;
+        const newSplit = Math.max(20, Math.min(80, (relativeX / rect.width) * 100));
+        setMainSplit(newSplit);
+      } else if (isDraggingRight && rightPaneRef.current) {
+        e.preventDefault();
+        const rect = rightPaneRef.current.getBoundingClientRect();
+        const relativeY = e.clientY - rect.top;
+        const newSplit = Math.max(15, Math.min(85, (relativeY / rect.height) * 100));
+        setRightSplit(newSplit);
+      }
+    };
+
+    const handleMouseUp = () => {
+      setIsDraggingSidebar(false);
+      setIsDraggingMain(false);
+      setIsDraggingRight(false);
+    };
+
+    const isDragging = isDraggingSidebar || isDraggingMain || isDraggingRight;
+    if (isDragging) {
+      window.addEventListener("mousemove", handleMouseMove);
+      window.addEventListener("mouseup", handleMouseUp);
+    }
+
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [isDraggingSidebar, isDraggingMain, isDraggingRight]);
+
   // Start sandbox container & poll status
   useEffect(() => {
     if (!replId) return;
@@ -107,6 +187,10 @@ export default function IDE({ initialProject, initialFiles, user }: IDEProps) {
       try {
         const res = await axios.get(`/api/projects/${encodeURIComponent(replId)}/status`);
         if (!isMounted) return;
+
+        if (res.data?.runnerPort) {
+          setRunnerPort(res.data.runnerPort);
+        }
 
         if (res.data?.ready) {
           if (pollInterval) clearInterval(pollInterval);
@@ -136,11 +220,13 @@ export default function IDE({ initialProject, initialFiles, user }: IDEProps) {
     };
   }, [replId]);
 
-  // Connect WebSocket to Runner
+  // Connect WebSocket to Runner on EC2 host / port
   useEffect(() => {
     if (!isSandboxReady || !replId) return;
 
-    let wsUrl = process.env.NEXT_PUBLIC_RUNNER_WS_URL || "http://localhost:3001";
+    const host = typeof window !== "undefined" ? window.location.hostname : "localhost";
+    const port = runnerPort || 3001;
+    let wsUrl = process.env.NEXT_PUBLIC_RUNNER_WS_URL || `http://${host}:${port}`;
     console.log(`[IDE] Connecting Socket.IO to ${wsUrl} for replId=${replId}`);
 
     const newSocket = io(wsUrl, {
@@ -152,7 +238,7 @@ export default function IDE({ initialProject, initialFiles, user }: IDEProps) {
     });
 
     newSocket.on("connect", () => {
-      console.log(`[IDE] Socket connected!`);
+      console.log(`[IDE] Socket connected to runner at ${wsUrl}`);
     });
 
     setSocket(newSocket);
@@ -160,7 +246,7 @@ export default function IDE({ initialProject, initialFiles, user }: IDEProps) {
     return () => {
       newSocket.disconnect();
     };
-  }, [isSandboxReady, replId]);
+  }, [isSandboxReady, replId, runnerPort]);
 
   // Handle file editing
   const handleContentChange = (newContent: string) => {
@@ -179,7 +265,7 @@ export default function IDE({ initialProject, initialFiles, user }: IDEProps) {
     }
   };
 
-  // Save active files to S3
+  // Save active files to disk / S3
   const handleSaveToS3 = async () => {
     if (!replId || isSaving) return;
     setIsSaving(true);
@@ -206,14 +292,14 @@ export default function IDE({ initialProject, initialFiles, user }: IDEProps) {
         });
         dirtyFilesRef.current.clear();
       } catch (err) {
-        console.warn("Save to S3 error:", err);
+        console.warn("Save files error:", err);
       }
     }
 
     setIsSaving(false);
   };
 
-  // Run command handler
+  // Run command handler (sends directly into terminal PTY and triggers backend runner)
   const handleRun = async (overrideCmd?: string) => {
     if (isRunning || !replId) return;
     setIsRunning(true);
@@ -224,28 +310,36 @@ export default function IDE({ initialProject, initialFiles, user }: IDEProps) {
 
     const cmdToRun = overrideCmd || runCommand;
 
+    // 1. Send Ctrl+C followed by the command into the terminal PTY for live terminal output
+    if (socket && socket.connected) {
+      socket.emit("terminalData", {
+        data: `\x03\r\n${cmdToRun}\r\n`,
+        terminalId: 0,
+      });
+    }
+
+    // 2. Also send backend runner API call
     try {
       await axios.post(`/api/projects/${encodeURIComponent(replId)}/run`, {
         command: cmdToRun,
         path: selectedFile?.path,
         content: selectedFile?.content,
       });
-
-      // Trigger auto-reload in preview iframe
-      setTimeout(() => {
-        if (typeof window !== "undefined") {
-          window.dispatchEvent(
-            new CustomEvent("vessel:file-updated", {
-              detail: { replId, path: selectedFile?.path },
-            })
-          );
-        }
-        setIsRunning(false);
-      }, 600);
     } catch (err) {
       console.warn("Error running project:", err);
-      setIsRunning(false);
     }
+
+    // 3. Trigger auto-reload in preview iframe once server starts listening
+    setTimeout(() => {
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent("vessel:file-updated", {
+            detail: { replId, path: selectedFile?.path },
+          })
+        );
+      }
+      setIsRunning(false);
+    }, 1500);
   };
 
   // Close & stop project
@@ -262,7 +356,7 @@ export default function IDE({ initialProject, initialFiles, user }: IDEProps) {
       console.warn("Error stopping sandbox:", err);
     }
 
-    router.push("/projects");
+    window.location.href = "/projects";
   };
 
   // Keyboard shortcut Ctrl+Enter to Run, Ctrl+S to Save
@@ -310,53 +404,50 @@ export default function IDE({ initialProject, initialFiles, user }: IDEProps) {
     };
   }, [replId]);
 
+  const isDraggingAny = isDraggingSidebar || isDraggingMain || isDraggingRight;
+
   return (
-    <div className="h-screen w-screen bg-[#0B0D11] text-white flex flex-col overflow-hidden font-sans select-none">
+    <div
+      className={`h-screen w-screen bg-[#0B0D11] text-white flex flex-col overflow-hidden font-sans select-none ${
+        isDraggingAny ? "cursor-grabbing select-none" : ""
+      }`}
+    >
       {/* Top IDE Toolbar */}
       <header className="h-12 border-b border-[#232936] bg-[#12151B] px-4 flex items-center justify-between shrink-0 z-30">
         <div className="flex items-center gap-3 min-w-0">
           <button
             onClick={handleCloseProject}
             title="Back to Projects Dashboard"
-            className="flex items-center gap-1 text-slate-400 hover:text-white transition font-mono text-xs"
+            className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-white transition font-mono group cursor-pointer"
           >
-            <ArrowLeft className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Projects</span>
+            <ArrowLeft className="w-4 h-4 transition-transform group-hover:-translate-x-0.5" />
+            <span>Projects</span>
           </button>
-
           <span className="text-slate-600">/</span>
-
-          <span className="font-semibold text-xs font-mono text-white truncate max-w-[200px]">
+          <span className="font-mono text-xs font-bold text-slate-200 truncate">
             {initialProject.name}
           </span>
-
-          <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-[#181C24] border border-[#232936] text-slate-400 uppercase hidden sm:inline">
+          <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-[#181C24] text-slate-400 border border-[#232936]">
             {language}
           </span>
         </div>
 
-        {/* Center Controls: Run Button & Save Button */}
-        <div className="flex items-center gap-3">
-          <RunButton
-            isRunning={isRunning}
-            language={language}
-            runCommand={runCommand}
-            onRun={handleRun}
-            onCommandChange={(cmd) => setRunCommand(cmd)}
-          />
+        {/* Center: Run & Save Controls */}
+        <div className="flex items-center gap-2">
+          <RunButton isRunning={isRunning} onRun={() => handleRun()} />
 
           <button
             onClick={handleSaveToS3}
             disabled={isSaving}
-            className="p-1.5 text-slate-400 hover:text-white bg-[#181C24] hover:bg-[#232936] border border-[#232936] rounded-lg transition"
-            title="Save to S3 (Ctrl+S)"
+            title="Save to persistent storage (Ctrl+S)"
+            className="p-2 text-slate-400 hover:text-white hover:bg-[#181C24] border border-[#232936] rounded-xl transition cursor-pointer disabled:opacity-50"
           >
-            {isSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin text-[#E73F1E]" /> : <Save className="w-3.5 h-3.5" />}
+            {isSaving ? <Loader2 className="w-4 h-4 animate-spin text-[#E73F1E]" /> : <Save className="w-4 h-4" />}
           </button>
         </div>
 
-        {/* Right Controls: View Modes & Stop Button */}
-        <div className="flex items-center gap-2">
+        {/* Right: Layout Switcher & Stop Container */}
+        <div className="flex items-center gap-3">
           <div className="hidden md:flex items-center bg-[#0B0D11] border border-[#232936] rounded-lg p-0.5 text-xs">
             <button
               onClick={() => setViewMode("split")}
@@ -391,7 +482,7 @@ export default function IDE({ initialProject, initialFiles, user }: IDEProps) {
           <button
             onClick={handleCloseProject}
             disabled={isStopping}
-            className="flex items-center gap-1 px-2.5 py-1.5 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 rounded-lg text-xs font-semibold transition"
+            className="flex items-center gap-1 px-2.5 py-1.5 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 rounded-lg text-xs font-semibold transition cursor-pointer"
             title="Stop Docker Container"
           >
             {isStopping ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Square className="w-3.5 h-3.5 fill-current" />}
@@ -401,9 +492,15 @@ export default function IDE({ initialProject, initialFiles, user }: IDEProps) {
       </header>
 
       {/* Main Workspace Body */}
-      <div className="flex-1 flex overflow-hidden">
+      <div className="flex-1 flex overflow-hidden relative">
+        {/* Invisible Overlay during Dragging to prevent Monaco / iframe pointer trap */}
+        {isDraggingAny && (
+          <div className="fixed inset-0 z-50 bg-transparent cursor-grabbing" />
+        )}
+
         {/* File Explorer Sidebar */}
         <FileExplorer
+          width={sidebarWidth}
           files={files}
           selectedFile={selectedFile}
           onSelectFile={(f) => {
@@ -413,7 +510,15 @@ export default function IDE({ initialProject, initialFiles, user }: IDEProps) {
               content: cached !== undefined ? cached : f.content,
             });
           }}
-          onNewFile={(name) => {
+          onRefresh={() => {
+            axios
+              .get(`/api/projects/${encodeURIComponent(replId)}/files`)
+              .then((res) => {
+                if (res.data?.files) setFiles(res.data.files);
+              })
+              .catch(() => {});
+          }}
+          onNewFile={async (name) => {
             const newFile: RemoteFile = {
               name,
               path: name,
@@ -421,6 +526,7 @@ export default function IDE({ initialProject, initialFiles, user }: IDEProps) {
               content: "",
             };
             setFiles((prev) => [...prev, newFile]);
+            fileContentsRef.current[name] = "";
             setSelectedFile({
               id: name,
               name,
@@ -431,32 +537,60 @@ export default function IDE({ initialProject, initialFiles, user }: IDEProps) {
               content: "",
             });
             dirtyFilesRef.current.add(name);
+
+            // Persist immediately to server
+            try {
+              await axios.post(`/api/projects/${encodeURIComponent(replId)}/sync`, {
+                files: [{ path: name, content: "" }],
+              });
+            } catch (err) {
+              console.warn("Immediate file save error:", err);
+            }
           }}
+        />
+
+        {/* Sidebar Vertical Resizer */}
+        <div
+          onMouseDown={() => setIsDraggingSidebar(true)}
+          className="w-1 bg-[#232936] hover:bg-[#E73F1E] active:bg-[#E73F1E] cursor-col-resize transition shrink-0 select-none z-20"
         />
 
         {/* View Layouts */}
         {viewMode === "split" && (
-          <div className="flex-1 flex overflow-hidden">
+          <div ref={workspaceRef} className="flex-1 flex overflow-hidden">
             {/* Left: Editor */}
-            <div style={{ width: `${mainSplit}%` }} className="h-full flex flex-col overflow-hidden">
+            <div
+              style={{ width: `${mainSplit}%` }}
+              className={`h-full flex flex-col overflow-hidden ${isDraggingAny ? "pointer-events-none" : ""}`}
+            >
               <Editor selectedFile={selectedFile} onChange={handleContentChange} />
             </div>
 
-            {/* Main Split Divider */}
+            {/* Main Split Resizer (Editor vs Right Column) */}
             <div
               onMouseDown={() => setIsDraggingMain(true)}
-              className="w-1 bg-[#232936] hover:bg-[#E73F1E] cursor-col-resize transition shrink-0"
+              className="w-1 bg-[#232936] hover:bg-[#E73F1E] active:bg-[#E73F1E] cursor-col-resize transition shrink-0 select-none z-20"
             />
 
             {/* Right: Preview & Terminal */}
-            <div style={{ width: `${100 - mainSplit}%` }} className="h-full flex flex-col overflow-hidden">
-              <div style={{ height: `${rightSplit}%` }} className="overflow-hidden">
+            <div
+              ref={rightPaneRef}
+              style={{ width: `${100 - mainSplit}%` }}
+              className="h-full flex flex-col overflow-hidden"
+            >
+              <div
+                style={{ height: `${rightSplit}%` }}
+                className={`overflow-hidden ${isDraggingAny ? "pointer-events-none" : ""}`}
+              >
                 <Preview replId={replId} />
               </div>
+
+              {/* Horizontal Resizer (Preview vs Terminal) */}
               <div
                 onMouseDown={() => setIsDraggingRight(true)}
-                className="h-1 bg-[#232936] hover:bg-[#E73F1E] cursor-row-resize transition shrink-0"
+                className="h-1 bg-[#232936] hover:bg-[#E73F1E] active:bg-[#E73F1E] cursor-row-resize transition shrink-0 select-none z-20"
               />
+
               <div style={{ height: `${100 - rightSplit}%` }} className="overflow-hidden">
                 <Terminal socket={socket} replId={replId} />
               </div>
@@ -487,15 +621,29 @@ export default function IDE({ initialProject, initialFiles, user }: IDEProps) {
       <footer className="h-6 bg-[#12151B] border-t border-[#232936] px-3 flex items-center justify-between text-[11px] font-mono text-slate-400 shrink-0">
         <div className="flex items-center gap-3">
           <span className="flex items-center gap-1.5">
-            <span className={`w-2 h-2 rounded-full ${isSandboxReady ? "bg-emerald-500" : "bg-amber-500 animate-pulse"}`} />
-            <span>{isSandboxReady ? "Docker Sandbox Active" : sandboxStatusText}</span>
+            <span
+              className={`w-2 h-2 rounded-full ${
+                socket && socket.connected
+                  ? "bg-emerald-500 animate-pulse"
+                  : isSandboxReady
+                  ? "bg-amber-500"
+                  : "bg-rose-500"
+              }`}
+            />
+            <span>
+              {socket && socket.connected
+                ? "Docker Sandbox Connected"
+                : isSandboxReady
+                ? "Sandbox Ready (Connecting WebSocket...)"
+                : sandboxStatusText}
+            </span>
           </span>
           <span className="text-slate-600">|</span>
           <span className="text-slate-400">{selectedFile ? selectedFile.path : "No active file"}</span>
         </div>
 
         <div className="flex items-center gap-3">
-          <span>Port 3000 &bull; 3001</span>
+          <span>Port 3000 &bull; {runnerPort || 3001}</span>
           <span className="text-slate-600">|</span>
           <span>Next.js App Router</span>
         </div>

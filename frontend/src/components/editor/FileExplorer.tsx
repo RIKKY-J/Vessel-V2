@@ -21,6 +21,7 @@ interface FileExplorerProps {
   onSelectFile: (file: File) => void;
   onRefresh?: () => void;
   onNewFile?: (path: string) => void;
+  width?: number;
 }
 
 export default function FileExplorer({
@@ -29,6 +30,7 @@ export default function FileExplorer({
   onSelectFile,
   onRefresh,
   onNewFile,
+  width,
 }: FileExplorerProps) {
   const [collapsedDirs, setCollapsedDirs] = useState<Set<string>>(new Set());
   const [isCreatingFile, setIsCreatingFile] = useState(false);
@@ -107,7 +109,10 @@ export default function FileExplorer({
   };
 
   return (
-    <div className="w-56 shrink-0 h-full bg-[#12151B] border-r border-[#232936] flex flex-col select-none">
+    <div
+      style={{ width: width ? `${width}px` : undefined }}
+      className={`${width ? "" : "w-56"} shrink-0 h-full bg-[#12151B] border-r border-[#232936] flex flex-col select-none`}
+    >
       {/* Explorer Header */}
       <div className="flex items-center justify-between px-3 py-2 border-b border-[#232936]">
         <span className="text-[11px] font-mono uppercase tracking-wider text-slate-400 font-bold">

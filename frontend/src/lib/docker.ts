@@ -81,9 +81,13 @@ export async function createSandbox(params: {
   const docker = getDockerClient();
   const runnerImage = process.env.RUNNER_IMAGE || "rikkyj/runner:latest";
 
-  // Allocate host ports
-  const hostAppPort = nextPortBase++;
-  const hostRunnerPort = nextPortBase++;
+  // Allocate host ports (favor predictable 3002/3001 for single-container setups)
+  let hostAppPort = 3002;
+  let hostRunnerPort = 3001;
+  if (sandboxPorts.size > 0 && !sandboxPorts.has(replId)) {
+    hostAppPort = nextPortBase++;
+    hostRunnerPort = nextPortBase++;
+  }
   sandboxPorts.set(replId, { appPort: hostAppPort, runnerPort: hostRunnerPort });
 
   try {
@@ -92,12 +96,20 @@ export async function createSandbox(params: {
       const existing = docker.getContainer(containerName);
       const inspect = await existing.inspect();
       if (inspect.State.Running) {
+        const p3000 = inspect.NetworkSettings?.Ports?.["3000/tcp"]?.[0]?.HostPort;
+        const p3001 = inspect.NetworkSettings?.Ports?.["3001/tcp"]?.[0]?.HostPort;
+        const resolvedPorts = {
+          appPort: p3000 ? parseInt(p3000) : hostAppPort,
+          runnerPort: p3001 ? parseInt(p3001) : hostRunnerPort,
+        };
+        sandboxPorts.set(replId, resolvedPorts);
+
         return {
           replId,
           containerId: inspect.Id,
           status: "RUNNING",
-          appPort: hostAppPort,
-          runnerPort: hostRunnerPort,
+          appPort: resolvedPorts.appPort,
+          runnerPort: resolvedPorts.runnerPort,
         };
       }
       await existing.remove({ force: true });
@@ -205,14 +217,23 @@ export async function getSandboxStatus(replId: string): Promise<SandboxInfo> {
   try {
     const container = docker.getContainer(containerName);
     const inspect = await container.inspect();
-    const ports = sandboxPorts.get(replId);
+    let ports = sandboxPorts.get(replId);
+    if (!ports && inspect.NetworkSettings?.Ports) {
+      const p3000 = inspect.NetworkSettings.Ports["3000/tcp"]?.[0]?.HostPort;
+      const p3001 = inspect.NetworkSettings.Ports["3001/tcp"]?.[0]?.HostPort;
+      ports = {
+        appPort: p3000 ? parseInt(p3000) : 3002,
+        runnerPort: p3001 ? parseInt(p3001) : 3001,
+      };
+      sandboxPorts.set(replId, ports);
+    }
 
     return {
       replId,
       containerId: inspect.Id,
       status: inspect.State.Running ? "RUNNING" : "STOPPED",
-      appPort: ports?.appPort,
-      runnerPort: ports?.runnerPort,
+      appPort: ports?.appPort || 3002,
+      runnerPort: ports?.runnerPort || 3001,
       containerIp: inspect.NetworkSettings.IPAddress,
     };
   } catch {
@@ -223,6 +244,6 @@ export async function getSandboxStatus(replId: string): Promise<SandboxInfo> {
   }
 }
 
-export function getSandboxPorts(replId: string): { appPort: number; runnerPort: number } | undefined {
-  return sandboxPorts.get(replId);
+export function getSandboxPorts(replId: string): { appPort: number; runnerPort: number } {
+  return sandboxPorts.get(replId) || { appPort: 3002, runnerPort: 3001 };
 }

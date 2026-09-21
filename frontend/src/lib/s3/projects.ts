@@ -1,5 +1,7 @@
 import { getS3Client, getS3Bucket } from "./client";
 import { S3 } from "aws-sdk";
+import fs from "fs";
+import path from "path";
 
 export interface ProjectFile {
   type: "file" | "dir";
@@ -8,26 +10,74 @@ export interface ProjectFile {
   content?: string;
 }
 
+export function getLocalWorkspaceDir(replId: string): string {
+  const baseDir = process.env.VESSEL_WORKSPACES_DIR || path.join(process.cwd(), "data", "workspaces");
+  return path.join(baseDir, replId);
+}
+
+export async function readLocalProjectFiles(replId: string): Promise<ProjectFile[]> {
+  const localDir = getLocalWorkspaceDir(replId);
+  const files: ProjectFile[] = [];
+
+  if (!fs.existsSync(localDir)) {
+    return files;
+  }
+
+  async function scan(currentDir: string, relPrefix: string = "") {
+    try {
+      const entries = await fs.promises.readdir(currentDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.name === "node_modules" || entry.name === ".git" || entry.name === ".next") continue;
+        const relPath = relPrefix ? `${relPrefix}/${entry.name}` : entry.name;
+        const fullPath = path.join(currentDir, entry.name);
+
+        if (entry.isDirectory()) {
+          await scan(fullPath, relPath);
+        } else if (entry.isFile()) {
+          try {
+            const content = await fs.promises.readFile(fullPath, "utf-8");
+            files.push({
+              type: "file",
+              name: entry.name,
+              path: relPath,
+              content,
+            });
+          } catch {}
+        }
+      }
+    } catch {}
+  }
+
+  await scan(localDir);
+  return files;
+}
+
 export async function checkProjectExistsInS3(replId: string): Promise<boolean> {
-  const s3 = getS3Client();
-  const bucket = getS3Bucket();
+  // Check local disk first
+  const localFiles = await readLocalProjectFiles(replId);
+  if (localFiles.length > 0) return true;
+
   try {
+    const s3 = getS3Client();
+    const bucket = getS3Bucket();
     const list = await s3.listObjectsV2({ Bucket: bucket, Prefix: `code/${replId}/`, MaxKeys: 1 }).promise();
     return Boolean(list.Contents && list.Contents.length > 0);
   } catch (err) {
-    console.warn(`[S3] checkProjectExistsInS3 error for replId ${replId}:`, err);
     return false;
   }
 }
 
 export async function fetchProjectFiles(replId: string): Promise<ProjectFile[]> {
-  const s3 = getS3Client();
-  const bucket = getS3Bucket();
-  const prefix = `code/${replId}/`;
   const files: ProjectFile[] = [];
+  const localDir = getLocalWorkspaceDir(replId);
 
+  // 1. Attempt to fetch from AWS S3
   try {
+    const s3 = getS3Client();
+    const bucket = getS3Bucket();
+    const prefix = `code/${replId}/`;
     let continuationToken: string | undefined = undefined;
+
     do {
       const resp: S3.ListObjectsV2Output = await s3
         .listObjectsV2({
@@ -43,7 +93,6 @@ export async function fetchProjectFiles(replId: string): Promise<ProjectFile[]> 
           const relPath = item.Key.substring(prefix.length).replace(/^\/+/, "");
           if (!relPath || relPath.endsWith("/")) continue;
 
-          // Fetch file content
           try {
             const obj = await s3.getObject({ Bucket: bucket, Key: item.Key }).promise();
             const content = obj.Body ? obj.Body.toString("utf-8") : "";
@@ -56,6 +105,13 @@ export async function fetchProjectFiles(replId: string): Promise<ProjectFile[]> 
               path: relPath,
               content,
             });
+
+            // Mirror to local disk cache
+            try {
+              const fullLocalPath = path.join(localDir, relPath);
+              await fs.promises.mkdir(path.dirname(fullLocalPath), { recursive: true });
+              await fs.promises.writeFile(fullLocalPath, content, "utf-8");
+            } catch {}
           } catch (fetchErr) {
             console.warn(`[S3] Failed to read object ${item.Key}:`, fetchErr);
           }
@@ -65,27 +121,47 @@ export async function fetchProjectFiles(replId: string): Promise<ProjectFile[]> 
       continuationToken = resp.NextContinuationToken;
     } while (continuationToken);
 
-    return files;
-  } catch (err) {
-    console.warn(`[S3] fetchProjectFiles error for ${replId}:`, err);
-    return [];
+    if (files.length > 0) {
+      return files;
+    }
+  } catch (err: any) {
+    console.warn(`[S3] fetchProjectFiles error for ${replId} (${err.message}). Reading local workspace cache...`);
   }
+
+  // 2. Fallback to local workspace files on disk
+  return readLocalProjectFiles(replId);
 }
 
 export async function saveProjectFile(replId: string, filePath: string, content: string): Promise<void> {
-  const s3 = getS3Client();
-  const bucket = getS3Bucket();
   const cleanPath = filePath.replace(/^\/+/, "");
-  const key = `code/${replId}/${cleanPath}`;
 
-  await s3
-    .putObject({
-      Bucket: bucket,
-      Key: key,
-      Body: content,
-      ContentType: "text/plain; charset=utf-8",
-    })
-    .promise();
+  // 1. Immediately save to local disk store
+  try {
+    const localDir = getLocalWorkspaceDir(replId);
+    const fullPath = path.join(localDir, cleanPath);
+    await fs.promises.mkdir(path.dirname(fullPath), { recursive: true });
+    await fs.promises.writeFile(fullPath, content, "utf-8");
+  } catch (localErr) {
+    console.warn(`[Disk] Error writing local workspace file ${filePath}:`, localErr);
+  }
+
+  // 2. Asynchronously upload to S3
+  try {
+    const s3 = getS3Client();
+    const bucket = getS3Bucket();
+    const key = `code/${replId}/${cleanPath}`;
+
+    await s3
+      .putObject({
+        Bucket: bucket,
+        Key: key,
+        Body: content,
+        ContentType: "text/plain; charset=utf-8",
+      })
+      .promise();
+  } catch (s3Err: any) {
+    console.warn(`[S3] Upload warning for ${filePath}: ${s3Err.message}`);
+  }
 }
 
 export async function syncFilesToS3(replId: string, files: { path: string; content: string }[]): Promise<void> {
@@ -95,11 +171,19 @@ export async function syncFilesToS3(replId: string, files: { path: string; conte
 }
 
 export async function deleteProjectFiles(replId: string): Promise<void> {
-  const s3 = getS3Client();
-  const bucket = getS3Bucket();
-  const prefix = `code/${replId}/`;
-
+  // Delete from local disk
   try {
+    const localDir = getLocalWorkspaceDir(replId);
+    if (fs.existsSync(localDir)) {
+      await fs.promises.rm(localDir, { recursive: true, force: true });
+    }
+  } catch {}
+
+  // Delete from S3
+  try {
+    const s3 = getS3Client();
+    const bucket = getS3Bucket();
+    const prefix = `code/${replId}/`;
     const list = await s3.listObjectsV2({ Bucket: bucket, Prefix: prefix }).promise();
     if (list.Contents && list.Contents.length > 0) {
       const objects = list.Contents.map((c) => ({ Key: c.Key! }));
@@ -110,7 +194,7 @@ export async function deleteProjectFiles(replId: string): Promise<void> {
         })
         .promise();
     }
-  } catch (err) {
-    console.warn(`[S3] deleteProjectFiles error for ${replId}:`, err);
+  } catch (err: any) {
+    console.warn(`[S3] deleteProjectFiles error for ${replId}:`, err.message);
   }
 }

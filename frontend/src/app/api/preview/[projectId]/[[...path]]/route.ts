@@ -17,8 +17,9 @@ async function handleProxy(
   // Dynamic Docker container port resolution
   const { getSandboxPorts } = await import("@/lib/docker");
   const ports = getSandboxPorts(projectId);
-  const targetPort = ports?.appPort || 3000;
-  const targetUrl = process.env.SANDBOX_PREVIEW_URL_OVERRIDE || `http://localhost:${targetPort}${subpath}${search}`;
+  // Port 3000 is Next.js itself; the container's exposed app is mapped to host port 3002+
+  const targetPort = (ports?.appPort && ports.appPort !== 3000) ? ports.appPort : 3002;
+  const targetUrl = process.env.SANDBOX_PREVIEW_URL_OVERRIDE || `http://127.0.0.1:${targetPort}${subpath}${search}`;
 
   try {
     const controller = new AbortController();

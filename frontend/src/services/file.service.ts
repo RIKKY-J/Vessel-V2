@@ -3,10 +3,17 @@ import { fetchProjectFiles, saveProjectFile, syncFilesToS3 } from "@/lib/s3/proj
 
 export class FileService {
   async getProjectFiles(replId: string, userId?: string) {
+    let project = null;
     if (userId) {
-      await projectService.getProjectByReplId(replId, userId);
+      project = await projectService.getProjectByReplId(replId, userId);
     }
-    return fetchProjectFiles(replId);
+    let files = await fetchProjectFiles(replId);
+    if (!files || files.length === 0) {
+      const { copyTemplateToProject } = await import("@/lib/s3/templates");
+      await copyTemplateToProject(project?.language || "node-js", replId);
+      files = await fetchProjectFiles(replId);
+    }
+    return files;
   }
 
   async saveFile(replId: string, filePath: string, content: string, userId?: string) {

@@ -5,14 +5,24 @@ let s3Client: S3 | null = null;
 export function getS3Client(): S3 {
   if (s3Client) return s3Client;
 
-  s3Client = new S3({
+  const endpoint = process.env.S3_ENDPOINT;
+  const isCustomEndpoint = endpoint && !endpoint.includes("amazonaws.com");
+
+  const config: S3.ClientConfiguration = {
     accessKeyId: process.env.AWS_ACCESS_KEY_ID,
     secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-    endpoint: process.env.S3_ENDPOINT,
-    region: process.env.AWS_REGION || "us-east-1",
-    s3ForcePathStyle: true,
-  });
+    region: process.env.AWS_REGION || "ap-southeast-2",
+  };
 
+  if (isCustomEndpoint) {
+    config.endpoint = endpoint;
+    config.s3ForcePathStyle = true;
+  } else if (endpoint) {
+    config.endpoint = endpoint;
+    config.s3ForcePathStyle = false;
+  }
+
+  s3Client = new S3(config);
   return s3Client;
 }
 
