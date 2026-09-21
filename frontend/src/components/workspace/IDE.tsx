@@ -1,0 +1,505 @@
+"use client";
+
+import React, { useState, useEffect, useRef } from "react";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
+import axios from "axios";
+import { Socket, io } from "socket.io-client";
+import {
+  Columns,
+  Code2,
+  Globe,
+  Terminal as TerminalIcon,
+  ArrowLeft,
+  Loader2,
+  Square,
+  Save,
+  CheckCircle2,
+} from "lucide-react";
+import { File, RemoteFile, Type } from "@/components/editor/file-manager";
+import Editor from "@/components/editor/Editor";
+import FileExplorer from "@/components/editor/FileExplorer";
+import Terminal from "@/components/terminal/Terminal";
+import Preview from "@/components/preview/Preview";
+import RunButton from "./RunButton";
+
+type ViewMode = "split" | "code" | "preview" | "terminal";
+
+interface IDEProps {
+  initialProject: {
+    id: string;
+    name: string;
+    repl_id: string;
+    language: string;
+    status: string;
+    run_command?: string;
+  };
+  initialFiles: RemoteFile[];
+  user: {
+    userId: string;
+    email: string;
+    name: string;
+  };
+}
+
+export default function IDE({ initialProject, initialFiles, user }: IDEProps) {
+  const router = useRouter();
+  const replId = initialProject.repl_id;
+  const language = initialProject.language;
+
+  const [files, setFiles] = useState<RemoteFile[]>(initialFiles);
+  const [selectedFile, setSelectedFile] = useState<File | undefined>(undefined);
+  const fileContentsRef = useRef<Record<string, string>>({});
+  const dirtyFilesRef = useRef<Set<string>>(new Set());
+
+  const [socket, setSocket] = useState<Socket | null>(null);
+  const [isSandboxReady, setIsSandboxReady] = useState(false);
+  const [sandboxStatusText, setSandboxStatusText] = useState("Connecting to sandbox...");
+
+  const [viewMode, setViewMode] = useState<ViewMode>("split");
+  const [mainSplit, setMainSplit] = useState(55);
+  const [rightSplit, setRightSplit] = useState(50);
+  const [isDraggingMain, setIsDraggingMain] = useState(false);
+  const [isDraggingRight, setIsDraggingRight] = useState(false);
+
+  const [isRunning, setIsRunning] = useState(false);
+  const [runCommand, setRunCommand] = useState(
+    initialProject.run_command || (language === "python" ? "python3 main.py" : "node --watch index.js")
+  );
+  const [isStopping, setIsStopping] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+
+  // Initialize selected file from initial files
+  useEffect(() => {
+    if (initialFiles.length > 0) {
+      const map: Record<string, string> = {};
+      initialFiles.forEach((f) => {
+        if (f.content !== undefined) map[f.path] = f.content;
+      });
+      fileContentsRef.current = { ...fileContentsRef.current, ...map };
+
+      const preferred =
+        initialFiles.find((f) => f.name === "main.py" || f.name === "index.js") || initialFiles[0];
+
+      if (preferred) {
+        setSelectedFile({
+          id: preferred.path,
+          name: preferred.name,
+          path: preferred.path,
+          parentId: "0",
+          type: Type.FILE,
+          depth: 0,
+          content: preferred.content ?? map[preferred.path] ?? "",
+        });
+      }
+    }
+  }, [initialFiles]);
+
+  // Start sandbox container & poll status
+  useEffect(() => {
+    if (!replId) return;
+    let isMounted = true;
+    let pollInterval: NodeJS.Timeout | null = null;
+
+    setSandboxStatusText("Starting Docker sandbox container...");
+
+    const checkStatus = async () => {
+      try {
+        const res = await axios.get(`/api/projects/${encodeURIComponent(replId)}/status`);
+        if (!isMounted) return;
+
+        if (res.data?.ready) {
+          if (pollInterval) clearInterval(pollInterval);
+          setSandboxStatusText("Sandbox ready! Connecting terminal...");
+          setIsSandboxReady(true);
+        }
+      } catch {
+        // Will retry
+      }
+    };
+
+    axios
+      .post(`/api/projects/${encodeURIComponent(replId)}/start`)
+      .then(() => {
+        if (!isMounted) return;
+        checkStatus();
+        pollInterval = setInterval(checkStatus, 1500);
+      })
+      .catch((err) => {
+        console.warn("Start sandbox error (fallback to dev mode):", err);
+        if (isMounted) setIsSandboxReady(true);
+      });
+
+    return () => {
+      isMounted = false;
+      if (pollInterval) clearInterval(pollInterval);
+    };
+  }, [replId]);
+
+  // Connect WebSocket to Runner
+  useEffect(() => {
+    if (!isSandboxReady || !replId) return;
+
+    let wsUrl = process.env.NEXT_PUBLIC_RUNNER_WS_URL || "http://localhost:3001";
+    console.log(`[IDE] Connecting Socket.IO to ${wsUrl} for replId=${replId}`);
+
+    const newSocket = io(wsUrl, {
+      transports: ["websocket", "polling"],
+      reconnection: true,
+      timeout: 10000,
+      query: { replId },
+      auth: { replId },
+    });
+
+    newSocket.on("connect", () => {
+      console.log(`[IDE] Socket connected!`);
+    });
+
+    setSocket(newSocket);
+
+    return () => {
+      newSocket.disconnect();
+    };
+  }, [isSandboxReady, replId]);
+
+  // Handle file editing
+  const handleContentChange = (newContent: string) => {
+    if (!selectedFile) return;
+    fileContentsRef.current[selectedFile.path] = newContent;
+    dirtyFilesRef.current.add(selectedFile.path);
+
+    setSelectedFile((prev) => (prev ? { ...prev, content: newContent } : undefined));
+
+    // Emit live file change to runner if socket active
+    if (socket && socket.connected) {
+      socket.emit("updateContent", {
+        path: selectedFile.path,
+        content: newContent,
+      });
+    }
+  };
+
+  // Save active files to S3
+  const handleSaveToS3 = async () => {
+    if (!replId || isSaving) return;
+    setIsSaving(true);
+
+    const filesToSync: { path: string; content: string }[] = [];
+    if (dirtyFilesRef.current.size > 0) {
+      dirtyFilesRef.current.forEach((filePath) => {
+        filesToSync.push({
+          path: filePath,
+          content: fileContentsRef.current[filePath] ?? "",
+        });
+      });
+    } else if (selectedFile && selectedFile.content !== undefined) {
+      filesToSync.push({
+        path: selectedFile.path,
+        content: selectedFile.content,
+      });
+    }
+
+    if (filesToSync.length > 0) {
+      try {
+        await axios.post(`/api/projects/${encodeURIComponent(replId)}/sync`, {
+          files: filesToSync,
+        });
+        dirtyFilesRef.current.clear();
+      } catch (err) {
+        console.warn("Save to S3 error:", err);
+      }
+    }
+
+    setIsSaving(false);
+  };
+
+  // Run command handler
+  const handleRun = async (overrideCmd?: string) => {
+    if (isRunning || !replId) return;
+    setIsRunning(true);
+
+    if (viewMode === "code") {
+      setViewMode("split");
+    }
+
+    const cmdToRun = overrideCmd || runCommand;
+
+    try {
+      await axios.post(`/api/projects/${encodeURIComponent(replId)}/run`, {
+        command: cmdToRun,
+        path: selectedFile?.path,
+        content: selectedFile?.content,
+      });
+
+      // Trigger auto-reload in preview iframe
+      setTimeout(() => {
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(
+            new CustomEvent("vessel:file-updated", {
+              detail: { replId, path: selectedFile?.path },
+            })
+          );
+        }
+        setIsRunning(false);
+      }, 600);
+    } catch (err) {
+      console.warn("Error running project:", err);
+      setIsRunning(false);
+    }
+  };
+
+  // Close & stop project
+  const handleCloseProject = async () => {
+    if (isStopping) return;
+    setIsStopping(true);
+
+    // Save files before shutdown
+    await handleSaveToS3();
+
+    try {
+      await axios.post(`/api/projects/${encodeURIComponent(replId)}/stop`);
+    } catch (err) {
+      console.warn("Error stopping sandbox:", err);
+    }
+
+    router.push("/projects");
+  };
+
+  // Keyboard shortcut Ctrl+Enter to Run, Ctrl+S to Save
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+        e.preventDefault();
+        handleRun();
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+        e.preventDefault();
+        handleSaveToS3();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [replId, selectedFile, isRunning, runCommand]);
+
+  // Tab exit auto-sync
+  useEffect(() => {
+    if (!replId) return;
+    const handleExit = () => {
+      if (dirtyFilesRef.current.size === 0) return;
+      const filesToSave = Array.from(dirtyFilesRef.current).map((filePath) => ({
+        path: filePath,
+        content: fileContentsRef.current[filePath] ?? "",
+      }));
+
+      try {
+        fetch(`/api/projects/${encodeURIComponent(replId)}/sync`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ files: filesToSave }),
+          keepalive: true,
+        });
+      } catch {}
+    };
+
+    window.addEventListener("beforeunload", handleExit);
+    window.addEventListener("pagehide", handleExit);
+
+    return () => {
+      window.removeEventListener("beforeunload", handleExit);
+      window.removeEventListener("pagehide", handleExit);
+    };
+  }, [replId]);
+
+  return (
+    <div className="h-screen w-screen bg-[#0B0D11] text-white flex flex-col overflow-hidden font-sans select-none">
+      {/* Top IDE Toolbar */}
+      <header className="h-12 border-b border-[#232936] bg-[#12151B] px-4 flex items-center justify-between shrink-0 z-30">
+        <div className="flex items-center gap-3 min-w-0">
+          <button
+            onClick={handleCloseProject}
+            title="Back to Projects Dashboard"
+            className="flex items-center gap-1 text-slate-400 hover:text-white transition font-mono text-xs"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Projects</span>
+          </button>
+
+          <span className="text-slate-600">/</span>
+
+          <span className="font-semibold text-xs font-mono text-white truncate max-w-[200px]">
+            {initialProject.name}
+          </span>
+
+          <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-[#181C24] border border-[#232936] text-slate-400 uppercase hidden sm:inline">
+            {language}
+          </span>
+        </div>
+
+        {/* Center Controls: Run Button & Save Button */}
+        <div className="flex items-center gap-3">
+          <RunButton
+            isRunning={isRunning}
+            language={language}
+            runCommand={runCommand}
+            onRun={handleRun}
+            onCommandChange={(cmd) => setRunCommand(cmd)}
+          />
+
+          <button
+            onClick={handleSaveToS3}
+            disabled={isSaving}
+            className="p-1.5 text-slate-400 hover:text-white bg-[#181C24] hover:bg-[#232936] border border-[#232936] rounded-lg transition"
+            title="Save to S3 (Ctrl+S)"
+          >
+            {isSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin text-[#E73F1E]" /> : <Save className="w-3.5 h-3.5" />}
+          </button>
+        </div>
+
+        {/* Right Controls: View Modes & Stop Button */}
+        <div className="flex items-center gap-2">
+          <div className="hidden md:flex items-center bg-[#0B0D11] border border-[#232936] rounded-lg p-0.5 text-xs">
+            <button
+              onClick={() => setViewMode("split")}
+              className={`p-1.5 rounded transition ${viewMode === "split" ? "bg-[#181C24] text-white" : "text-slate-400 hover:text-white"}`}
+              title="Split View"
+            >
+              <Columns className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={() => setViewMode("code")}
+              className={`p-1.5 rounded transition ${viewMode === "code" ? "bg-[#181C24] text-white" : "text-slate-400 hover:text-white"}`}
+              title="Code Only"
+            >
+              <Code2 className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={() => setViewMode("preview")}
+              className={`p-1.5 rounded transition ${viewMode === "preview" ? "bg-[#181C24] text-white" : "text-slate-400 hover:text-white"}`}
+              title="Preview Only"
+            >
+              <Globe className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={() => setViewMode("terminal")}
+              className={`p-1.5 rounded transition ${viewMode === "terminal" ? "bg-[#181C24] text-white" : "text-slate-400 hover:text-white"}`}
+              title="Terminal Only"
+            >
+              <TerminalIcon className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
+          <button
+            onClick={handleCloseProject}
+            disabled={isStopping}
+            className="flex items-center gap-1 px-2.5 py-1.5 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 rounded-lg text-xs font-semibold transition"
+            title="Stop Docker Container"
+          >
+            {isStopping ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Square className="w-3.5 h-3.5 fill-current" />}
+            <span className="hidden sm:inline">{isStopping ? "Stopping..." : "Stop"}</span>
+          </button>
+        </div>
+      </header>
+
+      {/* Main Workspace Body */}
+      <div className="flex-1 flex overflow-hidden">
+        {/* File Explorer Sidebar */}
+        <FileExplorer
+          files={files}
+          selectedFile={selectedFile}
+          onSelectFile={(f) => {
+            const cached = fileContentsRef.current[f.path];
+            setSelectedFile({
+              ...f,
+              content: cached !== undefined ? cached : f.content,
+            });
+          }}
+          onNewFile={(name) => {
+            const newFile: RemoteFile = {
+              name,
+              path: name,
+              type: "file",
+              content: "",
+            };
+            setFiles((prev) => [...prev, newFile]);
+            setSelectedFile({
+              id: name,
+              name,
+              path: name,
+              parentId: "0",
+              type: Type.FILE,
+              depth: 0,
+              content: "",
+            });
+            dirtyFilesRef.current.add(name);
+          }}
+        />
+
+        {/* View Layouts */}
+        {viewMode === "split" && (
+          <div className="flex-1 flex overflow-hidden">
+            {/* Left: Editor */}
+            <div style={{ width: `${mainSplit}%` }} className="h-full flex flex-col overflow-hidden">
+              <Editor selectedFile={selectedFile} onChange={handleContentChange} />
+            </div>
+
+            {/* Main Split Divider */}
+            <div
+              onMouseDown={() => setIsDraggingMain(true)}
+              className="w-1 bg-[#232936] hover:bg-[#E73F1E] cursor-col-resize transition shrink-0"
+            />
+
+            {/* Right: Preview & Terminal */}
+            <div style={{ width: `${100 - mainSplit}%` }} className="h-full flex flex-col overflow-hidden">
+              <div style={{ height: `${rightSplit}%` }} className="overflow-hidden">
+                <Preview replId={replId} />
+              </div>
+              <div
+                onMouseDown={() => setIsDraggingRight(true)}
+                className="h-1 bg-[#232936] hover:bg-[#E73F1E] cursor-row-resize transition shrink-0"
+              />
+              <div style={{ height: `${100 - rightSplit}%` }} className="overflow-hidden">
+                <Terminal socket={socket} replId={replId} />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {viewMode === "code" && (
+          <div className="flex-1 h-full overflow-hidden">
+            <Editor selectedFile={selectedFile} onChange={handleContentChange} />
+          </div>
+        )}
+
+        {viewMode === "preview" && (
+          <div className="flex-1 h-full overflow-hidden">
+            <Preview replId={replId} />
+          </div>
+        )}
+
+        {viewMode === "terminal" && (
+          <div className="flex-1 h-full overflow-hidden">
+            <Terminal socket={socket} replId={replId} />
+          </div>
+        )}
+      </div>
+
+      {/* Bottom Status Bar */}
+      <footer className="h-6 bg-[#12151B] border-t border-[#232936] px-3 flex items-center justify-between text-[11px] font-mono text-slate-400 shrink-0">
+        <div className="flex items-center gap-3">
+          <span className="flex items-center gap-1.5">
+            <span className={`w-2 h-2 rounded-full ${isSandboxReady ? "bg-emerald-500" : "bg-amber-500 animate-pulse"}`} />
+            <span>{isSandboxReady ? "Docker Sandbox Active" : sandboxStatusText}</span>
+          </span>
+          <span className="text-slate-600">|</span>
+          <span className="text-slate-400">{selectedFile ? selectedFile.path : "No active file"}</span>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <span>Port 3000 &bull; 3001</span>
+          <span className="text-slate-600">|</span>
+          <span>Next.js App Router</span>
+        </div>
+      </footer>
+    </div>
+  );
+}
