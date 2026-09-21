@@ -1,10 +1,10 @@
-import { fork, IPty } from 'node-pty';
+import * as pty from 'node-pty';
 import fs from "fs";
 
 const SHELL = fs.existsSync("/bin/bash") ? "/bin/bash" : "bash";
 
 export class TerminalManager {
-    private sessions: { [id: string]: { terminal: IPty; replId: string } } = {};
+    private sessions: { [id: string]: { terminal: pty.IPty; replId: string } } = {};
 
     constructor() {
         this.sessions = {};
@@ -23,7 +23,8 @@ export class TerminalManager {
         }
 
         console.log(`[PTY] Creating new PTY (${cols}x${rows}) for socket ${id}, replId=${replId}`);
-        const term = fork(SHELL, [], {
+        const spawnPty = pty.spawn || (pty as any).fork;
+        const term = spawnPty(SHELL, [], {
             cols: cols || 100,
             rows: rows || 24,
             name: 'xterm-256color',
@@ -44,7 +45,7 @@ export class TerminalManager {
             terminal: term,
             replId
         };
-        term.on('exit', (exitCode) => {
+        term.on('exit', (exitCode: number) => {
             console.log(`[PTY] PTY exited for socket ${id}, pid=${term.pid}, exitCode=${exitCode}`);
             delete this.sessions[id];
         });
