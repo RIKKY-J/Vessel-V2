@@ -2,7 +2,7 @@ import { Server, Socket } from "socket.io";
 import { Server as HttpServer } from "http";
 import { saveToS3, fetchS3Folder, saveFolderToS3 } from "./aws";
 import path from "path";
-import { fetchDir, fetchFileContent, saveFile } from "./fs";
+import { fetchDir, fetchFileContent, saveFile, seedWorkspaceFiles } from "./fs";
 import { TerminalManager } from "./pty";
 
 const terminalManager = new TerminalManager();
@@ -45,6 +45,13 @@ export function initWs(httpServer: HttpServer) {
                     console.log(`[WS] Fallback fetch complete. Files found: ${rootContent.length}`);
                 } catch (err) {
                     console.error("[WS] Fallback S3 fetch error:", err);
+                }
+
+                // If still empty after S3 check, guarantee boilerplate starter files exist
+                if (!rootContent || rootContent.length === 0) {
+                    console.log(`[WS] Workspace still empty. Generating default boilerplate files.`);
+                    seedWorkspaceFiles(process.env.LANGUAGE || "node-js");
+                    rootContent = await fetchDir("/workspace", "");
                 }
             }
 

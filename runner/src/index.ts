@@ -16,15 +16,9 @@ process.on("unhandledRejection", (reason, promise) => {
   console.error("[Runner] Unhandled Rejection at:", promise, "reason:", reason);
 });
 
-// Ensure /workspace exists
-if (!fs.existsSync("/workspace")) {
-  try {
-    fs.mkdirSync("/workspace", { recursive: true });
-    console.log("[Runner] Created /workspace directory successfully.");
-  } catch (err: any) {
-    console.warn("[Runner] Failed to create /workspace:", err?.message || err);
-  }
-}
+// Ensure /workspace exists and has starter files
+import { seedWorkspaceFiles } from "./fs";
+seedWorkspaceFiles(process.env.LANGUAGE || "node-js");
 
 const app = express();
 app.use(cors());

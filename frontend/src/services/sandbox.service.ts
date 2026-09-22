@@ -1,6 +1,7 @@
 import { projectService } from "./project.service";
 import { createSandbox, stopSandbox as dockerStopSandbox, getSandboxStatus as dockerGetStatus, getSandboxPorts } from "@/lib/docker";
 import { syncFilesToS3, saveProjectFile } from "@/lib/s3/projects";
+import { copyTemplateToProject } from "@/lib/s3/templates";
 import axios from "axios";
 
 export class SandboxService {
@@ -9,6 +10,11 @@ export class SandboxService {
     if (!project) {
       throw new Error(`Project ${replId} not found`);
     }
+
+    // 0. Ensure starter template files are populated on host
+    try {
+      await copyTemplateToProject(project.language, replId);
+    } catch {}
 
     // 1. Provision Docker container
     const sandbox = await createSandbox({

@@ -3,6 +3,8 @@ import os from "os";
 import net from "net";
 import fs from "fs";
 import path from "path";
+import { getLocalWorkspaceDir } from "./s3/projects";
+import { copyTemplateToProject } from "./s3/templates";
 
 let dockerInstance: Docker | null = null;
 let isDockerAvailable = false;
@@ -192,7 +194,25 @@ export async function createSandbox(params: {
     sandboxPorts.set(replId, { appPort: hostAppPort, runnerPort: hostRunnerPort });
     persistSandboxPorts(replId, { appPort: hostAppPort, runnerPort: hostRunnerPort });
 
-    // 4. Create and start isolated Docker container
+    // 4. Ensure local workspace directory exists on host with template starter files
+    const localWorkspaceDir = path.resolve(getLocalWorkspaceDir(replId));
+    if (!fs.existsSync(localWorkspaceDir)) {
+      try {
+        fs.mkdirSync(localWorkspaceDir, { recursive: true });
+        fs.chmodSync(localWorkspaceDir, 0o777);
+      } catch {}
+    }
+
+    try {
+      const existingFiles = fs.readdirSync(localWorkspaceDir);
+      if (existingFiles.length === 0) {
+        await copyTemplateToProject(language, replId);
+      }
+    } catch (err: any) {
+      console.warn(`[Docker] Pre-mounting template copy warning:`, err.message);
+    }
+
+    // 5. Create and start isolated Docker container with workspace mounted
     const container = await docker.createContainer({
       Image: runnerImage,
       name: containerName,
@@ -211,6 +231,7 @@ export async function createSandbox(params: {
         "3001/tcp": {},
       },
       HostConfig: {
+        Binds: [`${localWorkspaceDir}:/workspace:rw`],
         PortBindings: {
           "3000/tcp": [{ HostPort: hostAppPort.toString() }],
           "3001/tcp": [{ HostPort: hostRunnerPort.toString() }],
