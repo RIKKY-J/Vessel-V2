@@ -453,7 +453,7 @@ export default function IDE({ initialProject, initialFiles, user }: IDEProps) {
     >
       {/* Top IDE Toolbar */}
       <header className="h-12 border-b border-[#232936] bg-[#12151B] px-4 flex items-center justify-between shrink-0 z-30">
-        <div className="flex items-center gap-3 min-w-0">
+        <div className="flex items-center gap-2.5 min-w-0">
           <button
             onClick={handleCloseProject}
             title="Back to Projects Dashboard"
@@ -463,6 +463,9 @@ export default function IDE({ initialProject, initialFiles, user }: IDEProps) {
             <span>Projects</span>
           </button>
           <span className="text-slate-600">/</span>
+          <div className="w-6 h-6 rounded-md bg-white p-0.5 flex items-center justify-center shrink-0 shadow-sm border border-slate-200">
+            <img src="/vessel-logo.png" alt="Vessel" className="w-full h-full object-contain" />
+          </div>
           <span className="font-mono text-xs font-bold text-slate-200 truncate">
             {initialProject.name}
           </span>
@@ -485,7 +488,7 @@ export default function IDE({ initialProject, initialFiles, user }: IDEProps) {
             onClick={handleSaveToS3}
             disabled={isSaving}
             title="Save to persistent storage (Ctrl+S)"
-            className="p-2 text-slate-400 hover:text-white hover:bg-[#181C24] border border-[#232936] rounded-xl transition cursor-pointer disabled:opacity-50"
+            className="h-8 w-8 flex items-center justify-center text-slate-400 hover:text-white hover:bg-[#181C24] border border-[#232936] rounded-lg transition cursor-pointer disabled:opacity-50 shrink-0"
           >
             {isSaving ? <Loader2 className="w-4 h-4 animate-spin text-[#E73F1E]" /> : <Save className="w-4 h-4" />}
           </button>
@@ -590,6 +593,25 @@ export default function IDE({ initialProject, initialFiles, user }: IDEProps) {
               });
             } catch (err) {
               console.warn("Immediate file save error:", err);
+            }
+          }}
+          onNewFolder={async (name) => {
+            const cleanName = name.trim().replace(/^\/+/, "");
+            if (!cleanName) return;
+            const newFolder: RemoteFile = {
+              name: cleanName.split("/").pop() || cleanName,
+              path: cleanName,
+              type: "dir",
+            };
+            setFiles((prev) => [...prev.filter((f) => f.path !== cleanName), newFolder]);
+
+            // Persist folder immediately to server and runner
+            try {
+              await axios.post(`/api/projects/${encodeURIComponent(replId)}/sync`, {
+                folders: [cleanName],
+              });
+            } catch (err) {
+              console.warn("Folder save error:", err);
             }
           }}
         />

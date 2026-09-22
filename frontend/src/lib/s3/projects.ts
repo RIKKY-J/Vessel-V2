@@ -32,6 +32,11 @@ export async function readLocalProjectFiles(replId: string): Promise<ProjectFile
         const fullPath = path.join(currentDir, entry.name);
 
         if (entry.isDirectory()) {
+          files.push({
+            type: "dir",
+            name: entry.name,
+            path: relPath,
+          });
           await scan(fullPath, relPath);
         } else if (entry.isFile()) {
           try {
@@ -50,6 +55,13 @@ export async function readLocalProjectFiles(replId: string): Promise<ProjectFile
 
   await scan(localDir);
   return files;
+}
+
+export async function createProjectFolder(replId: string, folderPath: string): Promise<void> {
+  const cleanPath = folderPath.replace(/^\/+/, "");
+  const localDir = getLocalWorkspaceDir(replId);
+  const fullPath = path.join(localDir, cleanPath);
+  await fs.promises.mkdir(fullPath, { recursive: true });
 }
 
 export async function checkProjectExistsInS3(replId: string): Promise<boolean> {

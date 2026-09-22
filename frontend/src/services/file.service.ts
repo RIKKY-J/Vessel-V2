@@ -31,6 +31,15 @@ export class FileService {
     await syncFilesToS3(replId, files);
     return { success: true, count: files.length };
   }
+
+  async createFolder(replId: string, folderPath: string, userId?: string) {
+    if (userId) {
+      await projectService.getProjectByReplId(replId, userId);
+    }
+    const { createProjectFolder } = await import("@/lib/s3/projects");
+    await createProjectFolder(replId, folderPath);
+    return { success: true };
+  }
 }
 
 export const fileService = new FileService();

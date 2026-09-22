@@ -132,7 +132,9 @@ export default function AuthPage() {
           {/* Logo & Headings */}
           <div className="text-center mb-6">
             <div className="inline-flex items-center gap-2 bg-[#181C24] border border-[#232936] px-3 py-1.5 rounded-lg mb-4">
-              <span className="font-mono text-xs text-[#E73F1E] font-bold">&lt;/&gt;</span>
+              <div className="w-6 h-6 rounded bg-white p-0.5 flex items-center justify-center shrink-0 border border-slate-200">
+                <img src="/vessel-logo.png" alt="Vessel Logo" className="w-full h-full object-contain" />
+              </div>
               <span className="font-semibold text-sm tracking-wide text-white">vessel.editor</span>
             </div>
 

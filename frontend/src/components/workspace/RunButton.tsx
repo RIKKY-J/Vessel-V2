@@ -57,18 +57,18 @@ export default function RunButton({
   };
 
   return (
-    <div className="relative inline-flex items-center rounded-lg shadow-sm">
+    <div className="relative inline-flex items-center rounded-lg shadow-sm h-8">
       {/* Primary Run Button */}
       <button
         onClick={() => onRun()}
         disabled={isRunning}
-        className="flex items-center gap-1.5 px-3 py-1.5 bg-[#E73F1E] hover:bg-[#ff4d29] disabled:opacity-50 text-white font-semibold text-xs rounded-l-lg border-r border-[#b02e15] transition active:scale-[0.98]"
+        className="h-8 flex items-center gap-1.5 px-3.5 bg-[#E73F1E] hover:bg-[#ff4d29] disabled:opacity-50 text-white font-semibold text-xs rounded-l-lg transition active:scale-[0.98] cursor-pointer select-none"
         title="Run Application (Ctrl+Enter)"
       >
         {isRunning ? (
-          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+          <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
         ) : (
-          <Play className="w-3.5 h-3.5 fill-current" />
+          <Play className="w-3.5 h-3.5 fill-current shrink-0" />
         )}
         <span>{isRunning ? "Running..." : "Run"}</span>
       </button>
@@ -76,10 +76,10 @@ export default function RunButton({
       {/* Settings Popover Trigger */}
       <button
         onClick={() => setIsSettingsOpen((prev) => !prev)}
-        className="p-1.5 bg-[#c23317] hover:bg-[#b02e15] text-white rounded-r-lg transition"
+        className="h-8 w-8 flex items-center justify-center bg-[#E73F1E] hover:bg-[#ff4d29] text-white rounded-r-lg transition border-l border-black/20 active:scale-[0.98] cursor-pointer shrink-0 select-none"
         title="Configure Run Command"
       >
-        <Settings className="w-3.5 h-3.5" />
+        <Settings className="w-3.5 h-3.5 shrink-0" />
       </button>
 
       {/* Popover */}

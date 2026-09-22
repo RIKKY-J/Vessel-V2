@@ -130,9 +130,9 @@ export default function ProjectsDashboard({ initialProjects, user }: ProjectsDas
       <header className="h-16 border-b border-[#232936] px-6 sm:px-12 flex items-center justify-between sticky top-0 bg-[#0B0D11]/95 z-40 backdrop-blur">
         <div className="flex items-center gap-3">
           <Link href="/" className="flex items-center gap-2 group">
-            <span className="w-8 h-8 rounded-lg bg-[#181C24] border border-[#232936] flex items-center justify-center font-mono text-xs text-[#E73F1E] font-bold group-hover:border-[#E73F1E] transition">
-              &lt;/&gt;
-            </span>
+            <div className="w-8 h-8 rounded-lg bg-white p-1 flex items-center justify-center border border-slate-200 shadow-sm shrink-0 overflow-hidden group-hover:scale-105 transition">
+              <img src="/vessel-logo.png" alt="Vessel Logo" className="w-full h-full object-contain" />
+            </div>
             <span className="font-semibold text-sm tracking-wide text-white font-mono">
               vessel.projects
             </span>

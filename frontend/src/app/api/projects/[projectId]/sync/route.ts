@@ -26,13 +26,20 @@ export async function POST(
     }
 
     const body = await req.json();
-    const { files } = body;
+    const { files, folders } = body;
 
-    if (!Array.isArray(files)) {
-      return NextResponse.json({ error: "files must be an array" }, { status: 400 });
+    if (Array.isArray(folders)) {
+      for (const folder of folders) {
+        if (typeof folder === "string" && folder.trim()) {
+          await fileService.createFolder(replId, folder.trim(), user.userId);
+        }
+      }
     }
 
-    const result = await fileService.syncFiles(replId, files, user.userId);
+    let result = { success: true };
+    if (Array.isArray(files) && files.length > 0) {
+      result = await fileService.syncFiles(replId, files, user.userId);
+    }
     return NextResponse.json(result);
   } catch (err: any) {
     console.error("[API] Sync files error:", err);

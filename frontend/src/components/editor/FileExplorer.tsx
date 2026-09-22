@@ -21,6 +21,7 @@ interface FileExplorerProps {
   onSelectFile: (file: File) => void;
   onRefresh?: () => void;
   onNewFile?: (path: string) => void;
+  onNewFolder?: (path: string) => void;
   width?: number;
 }
 
@@ -30,11 +31,14 @@ export default function FileExplorer({
   onSelectFile,
   onRefresh,
   onNewFile,
+  onNewFolder,
   width,
 }: FileExplorerProps) {
   const [collapsedDirs, setCollapsedDirs] = useState<Set<string>>(new Set());
   const [isCreatingFile, setIsCreatingFile] = useState(false);
   const [newFileName, setNewFileName] = useState("");
+  const [isCreatingFolder, setIsCreatingFolder] = useState(false);
+  const [newFolderName, setNewFolderName] = useState("");
 
   const tree = buildFileTree(files);
 
@@ -53,6 +57,15 @@ export default function FileExplorer({
       onNewFile(newFileName.trim());
       setNewFileName("");
       setIsCreatingFile(false);
+    }
+  };
+
+  const handleCreateFolderSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (newFolderName.trim() && onNewFolder) {
+      onNewFolder(newFolderName.trim());
+      setNewFolderName("");
+      setIsCreatingFolder(false);
     }
   };
 
@@ -121,17 +134,30 @@ export default function FileExplorer({
 
         <div className="flex items-center gap-1">
           <button
-            onClick={() => setIsCreatingFile(true)}
+            onClick={() => {
+              setIsCreatingFile(true);
+              setIsCreatingFolder(false);
+            }}
             title="New File"
-            className="p-1 text-slate-400 hover:text-white rounded hover:bg-[#181C24] transition"
+            className="p-1 text-slate-400 hover:text-white rounded hover:bg-[#181C24] transition cursor-pointer"
           >
             <FilePlus className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={() => {
+              setIsCreatingFolder(true);
+              setIsCreatingFile(false);
+            }}
+            title="New Folder"
+            className="p-1 text-slate-400 hover:text-white rounded hover:bg-[#181C24] transition cursor-pointer"
+          >
+            <FolderPlus className="w-3.5 h-3.5" />
           </button>
           {onRefresh && (
             <button
               onClick={onRefresh}
               title="Refresh Files"
-              className="p-1 text-slate-400 hover:text-white rounded hover:bg-[#181C24] transition"
+              className="p-1 text-slate-400 hover:text-white rounded hover:bg-[#181C24] transition cursor-pointer"
             >
               <RefreshCw className="w-3.5 h-3.5" />
             </button>
@@ -141,7 +167,8 @@ export default function FileExplorer({
 
       {/* New File Inline Prompt */}
       {isCreatingFile && (
-        <form onSubmit={handleCreateFileSubmit} className="p-2 border-b border-[#232936]">
+        <form onSubmit={handleCreateFileSubmit} className="p-2 border-b border-[#232936] flex items-center gap-1.5">
+          <FileText className="w-3.5 h-3.5 text-[#E73F1E] shrink-0" />
           <input
             type="text"
             autoFocus
@@ -152,6 +179,24 @@ export default function FileExplorer({
               if (!newFileName.trim()) setIsCreatingFile(false);
             }}
             className="w-full bg-[#0B0D11] border border-[#E73F1E] rounded px-2 py-1 text-xs text-white placeholder-slate-600 focus:outline-none font-mono"
+          />
+        </form>
+      )}
+
+      {/* New Folder Inline Prompt */}
+      {isCreatingFolder && (
+        <form onSubmit={handleCreateFolderSubmit} className="p-2 border-b border-[#232936] flex items-center gap-1.5">
+          <Folder className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+          <input
+            type="text"
+            autoFocus
+            placeholder="folder name"
+            value={newFolderName}
+            onChange={(e) => setNewFolderName(e.target.value)}
+            onBlur={() => {
+              if (!newFolderName.trim()) setIsCreatingFolder(false);
+            }}
+            className="w-full bg-[#0B0D11] border border-amber-500 rounded px-2 py-1 text-xs text-white placeholder-slate-600 focus:outline-none font-mono"
           />
         </form>
       )}
