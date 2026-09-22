@@ -9,13 +9,11 @@
     "start:next": "next start",
     "lint": "next lint",
     "seed-s3": "node ../scripts/seed-s3.js",
-    "setup-ssl": "node scripts/setup-ssl.js",
     "postinstall": "prisma generate"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.6.0",
     "@prisma/client": "^5.19.0",
-    "@types/http-proxy": "^1.17.17",
     "aws-sdk": "^2.1556.0",
     "axios": "^1.6.7",
     "bcryptjs": "^2.4.3",
@@ -27,7 +25,6 @@
     "next": "^14.2.23",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "react-icons": "^5.0.1",
     "socket.io-client": "^4.7.4",
     "tailwind-merge": "^2.3.0",
     "xterm": "^5.3.0",
@@ -36,6 +33,7 @@
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
     "@types/dockerode": "^3.3.31",
+    "@types/http-proxy": "^1.17.17",
     "@types/jsonwebtoken": "^9.0.6",
     "@types/node": "^20.11.24",
     "@types/react": "^18.3.3",

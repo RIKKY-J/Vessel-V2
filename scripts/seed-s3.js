@@ -27,7 +27,7 @@ for (const envPath of envPaths) {
   }
 }
 
-const s3Bucket = process.env.S3_BUCKET || "s3-podforge";
+const s3Bucket = process.env.S3_BUCKET || "vessel-sandboxes";
 const s3Endpoint = process.env.S3_ENDPOINT || "https://s3.us-east-1.amazonaws.com";
 
 const s3 = new AWS.S3({

@@ -14,7 +14,7 @@ class CustomHandler(SimpleHTTPRequestHandler):
                 with open('index.html', 'rb') as f:
                     self.wfile.write(f.read())
             else:
-                self.wfile.write(b"<h1>Hello from Python Sandbox!</h1><p>PodForge environment running.</p>")
+                self.wfile.write(b"<h1>Hello from Python Sandbox!</h1><p>Vessel environment running.</p>")
             return
         return super().do_GET()
 

@@ -1,7 +1,7 @@
 {
   "name": "node-starter",
   "version": "1.0.0",
-  "description": "Node.js sandbox starter template for PodForge",
+  "description": "Node.js sandbox starter template for Vessel",
   "main": "index.js",
   "scripts": {
     "start": "node --watch index.js"

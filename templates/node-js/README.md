@@ -1,6 +1,6 @@
 # Node.js Starter Sandbox
 
-Welcome to your PodForge Node.js workspace!
+Welcome to your Vessel Node.js workspace!
 
 ## Running the Application
 - The application automatically binds to port `3000`.
