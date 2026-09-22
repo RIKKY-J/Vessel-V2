@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useMemo } from "react";
+import React, { useMemo, useRef, useEffect } from "react";
 import MonacoEditor from "@monaco-editor/react";
 import { Loader2, Code2 } from "lucide-react";
 import { File } from "./file-manager";
@@ -11,6 +11,8 @@ interface EditorProps {
 }
 
 export default function Editor({ selectedFile, onChange }: EditorProps) {
+  const editorRef = useRef<any>(null);
+
   const language = useMemo(() => {
     if (!selectedFile) return "javascript";
     const ext = selectedFile.name.split(".").pop()?.toLowerCase();
@@ -43,6 +45,20 @@ export default function Editor({ selectedFile, onChange }: EditorProps) {
     }
   }, [selectedFile]);
 
+  // Sync external content changes (e.g. from disk refresh or another user) into Monaco
+  useEffect(() => {
+    if (editorRef.current && selectedFile && selectedFile.content !== undefined) {
+      const currentVal = editorRef.current.getValue();
+      if (currentVal !== selectedFile.content) {
+        editorRef.current.setValue(selectedFile.content);
+      }
+    }
+  }, [selectedFile?.content, selectedFile?.path]);
+
+  const handleEditorDidMount = (editor: any) => {
+    editorRef.current = editor;
+  };
+
   if (!selectedFile) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center bg-[#0B0D11] text-slate-500 font-mono text-xs">
@@ -58,8 +74,10 @@ export default function Editor({ selectedFile, onChange }: EditorProps) {
       <MonacoEditor
         height="100%"
         language={language}
+        path={selectedFile.path}
         value={selectedFile.content ?? ""}
         theme="vs-dark"
+        onMount={handleEditorDidMount}
         onChange={(val) => onChange(val ?? "")}
         options={{
           minimap: { enabled: false },

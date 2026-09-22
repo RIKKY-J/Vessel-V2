@@ -19,7 +19,7 @@ interface FileExplorerProps {
   files: RemoteFile[];
   selectedFile: File | undefined;
   onSelectFile: (file: File) => void;
-  onRefresh?: () => void;
+  onRefresh?: () => Promise<void> | void;
   onNewFile?: (path: string) => void;
   onNewFolder?: (path: string) => void;
   width?: number;
@@ -35,10 +35,24 @@ export default function FileExplorer({
   width,
 }: FileExplorerProps) {
   const [collapsedDirs, setCollapsedDirs] = useState<Set<string>>(new Set());
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [isCreatingFile, setIsCreatingFile] = useState(false);
   const [newFileName, setNewFileName] = useState("");
   const [isCreatingFolder, setIsCreatingFolder] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
+
+  const handleRefreshClick = async () => {
+    if (isRefreshing || !onRefresh) return;
+    setIsRefreshing(true);
+    try {
+      await Promise.all([
+        Promise.resolve(onRefresh()),
+        new Promise((resolve) => setTimeout(resolve, 600)),
+      ]);
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
 
   const tree = buildFileTree(files);
 
@@ -155,11 +169,16 @@ export default function FileExplorer({
           </button>
           {onRefresh && (
             <button
-              onClick={onRefresh}
+              onClick={handleRefreshClick}
+              disabled={isRefreshing}
               title="Refresh Files"
-              className="p-1 text-slate-400 hover:text-white rounded hover:bg-[#181C24] transition cursor-pointer"
+              className="p-1 text-slate-400 hover:text-white rounded hover:bg-[#181C24] active:scale-90 active:rotate-180 active:text-[#E73F1E] active:bg-[#232936] transition-all duration-200 cursor-pointer disabled:opacity-50"
             >
-              <RefreshCw className="w-3.5 h-3.5" />
+              <RefreshCw
+                className={`w-3.5 h-3.5 transition-transform duration-300 ${
+                  isRefreshing ? "animate-spin text-[#E73F1E]" : ""
+                }`}
+              />
             </button>
           )}
         </div>

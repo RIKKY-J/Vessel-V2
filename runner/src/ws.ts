@@ -100,6 +100,8 @@ function initHandlers(socket: Socket, replId: string) {
             const fullPath = `/workspace/${filePath}`;
             await saveFile(fullPath, content);
             await saveToS3(`code/${replId}`, filePath, content);
+            // Broadcast live file changes to all other connected client tabs/collaborators
+            socket.broadcast.emit("fileUpdated", { path: filePath, content });
         } catch (err) {
             console.warn("[WS] updateContent error:", err);
         }

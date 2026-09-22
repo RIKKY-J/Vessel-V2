@@ -271,6 +271,19 @@ export default function IDE({ initialProject, initialFiles, user }: IDEProps) {
         console.log(`[IDE] Socket connected to runner at ${wsUrl}, transport=${newSocket.io?.engine?.transport?.name}`);
       });
 
+      newSocket.on("fileUpdated", ({ path: filePath, content }: { path: string; content: string }) => {
+        fileContentsRef.current[filePath] = content;
+        setSelectedFile((currentSelected) => {
+          if (currentSelected && currentSelected.path === filePath) {
+            return {
+              ...currentSelected,
+              content,
+            };
+          }
+          return currentSelected;
+        });
+      });
+
       newSocket.on("connect_error", (err) => {
         console.warn(`[IDE] Socket connection error:`, err.message);
       });
@@ -365,6 +378,45 @@ export default function IDE({ initialProject, initialFiles, user }: IDEProps) {
     }
 
     setIsSaving(false);
+  };
+
+  // Refresh workspace files from disk / server and update editor content
+  const handleRefreshFiles = async () => {
+    if (!replId) return;
+    try {
+      const res = await axios.get(
+        `/api/projects/${encodeURIComponent(replId)}/files?_t=${Date.now()}`
+      );
+      if (res.data?.files && Array.isArray(res.data.files)) {
+        const fetchedFiles: RemoteFile[] = res.data.files;
+        setFiles(fetchedFiles);
+
+        // 1. Update in-memory content cache for all fetched files
+        fetchedFiles.forEach((f) => {
+          if (f.content !== undefined) {
+            fileContentsRef.current[f.path] = f.content;
+          }
+        });
+
+        // 2. Clear dirty state for clean sync
+        dirtyFilesRef.current.clear();
+
+        // 3. Immediately update the currently open file in editor with fresh content
+        setSelectedFile((currentSelected) => {
+          if (!currentSelected) return currentSelected;
+          const fresh = fetchedFiles.find((f) => f.path === currentSelected.path);
+          if (fresh && fresh.content !== undefined) {
+            return {
+              ...currentSelected,
+              content: fresh.content,
+            };
+          }
+          return currentSelected;
+        });
+      }
+    } catch (err) {
+      console.warn("Refresh files error:", err);
+    }
   };
 
   // Run command handler (saves files first, sends into terminal PTY, and triggers backend runner)
@@ -611,14 +663,7 @@ export default function IDE({ initialProject, initialFiles, user }: IDEProps) {
               content: cached !== undefined ? cached : f.content,
             });
           }}
-          onRefresh={() => {
-            axios
-              .get(`/api/projects/${encodeURIComponent(replId)}/files`)
-              .then((res) => {
-                if (res.data?.files) setFiles(res.data.files);
-              })
-              .catch(() => {});
-          }}
+          onRefresh={handleRefreshFiles}
           onNewFile={async (name) => {
             const newFile: RemoteFile = {
               name,

@@ -80,10 +80,16 @@ export async function checkProjectExistsInS3(replId: string): Promise<boolean> {
 }
 
 export async function fetchProjectFiles(replId: string): Promise<ProjectFile[]> {
-  const files: ProjectFile[] = [];
   const localDir = getLocalWorkspaceDir(replId);
 
-  // 1. Attempt to fetch from AWS S3
+  // 1. Check local workspace disk first (authoritative and immediate for live containers)
+  const localFiles = await readLocalProjectFiles(replId);
+  if (localFiles.length > 0) {
+    return localFiles;
+  }
+
+  // 2. Fallback to AWS S3 if not found locally (e.g. cold start on new server)
+  const files: ProjectFile[] = [];
   try {
     const s3 = getS3Client();
     const bucket = getS3Bucket();
@@ -140,7 +146,6 @@ export async function fetchProjectFiles(replId: string): Promise<ProjectFile[]> 
     console.warn(`[S3] fetchProjectFiles error for ${replId} (${err.message}). Reading local workspace cache...`);
   }
 
-  // 2. Fallback to local workspace files on disk
   return readLocalProjectFiles(replId);
 }
 
