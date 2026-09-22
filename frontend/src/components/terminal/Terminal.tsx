@@ -127,7 +127,10 @@ export default function Terminal({ socket, replId }: TerminalProps) {
 
     const handleWindowResize = () => {
       try {
-        fitAddon.fit();
+        if (terminalRef.current && terminalRef.current.clientWidth > 0 && terminalRef.current.clientHeight > 0) {
+          fitAddon.fit();
+          term.scrollToBottom();
+        }
       } catch {}
     };
     window.addEventListener("resize", handleWindowResize);
@@ -136,7 +139,10 @@ export default function Terminal({ socket, replId }: TerminalProps) {
     if (typeof ResizeObserver !== "undefined" && terminalRef.current) {
       resizeObserver = new ResizeObserver(() => {
         try {
-          fitAddon.fit();
+          if (terminalRef.current && terminalRef.current.clientWidth > 0 && terminalRef.current.clientHeight > 0) {
+            fitAddon.fit();
+            term.scrollToBottom();
+          }
         } catch {}
       });
       resizeObserver.observe(terminalRef.current);

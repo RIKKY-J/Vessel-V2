@@ -443,6 +443,24 @@ export default function IDE({ initialProject, initialFiles, user }: IDEProps) {
     };
   }, [replId]);
 
+  // Instantly trigger window resize when viewMode or splits change so xterm.js fitAddon and Monaco Editor adapt without delay
+  useEffect(() => {
+    const frameId = requestAnimationFrame(() => {
+      window.dispatchEvent(new Event("resize"));
+    });
+    const timer1 = setTimeout(() => {
+      window.dispatchEvent(new Event("resize"));
+    }, 50);
+    const timer2 = setTimeout(() => {
+      window.dispatchEvent(new Event("resize"));
+    }, 150);
+    return () => {
+      cancelAnimationFrame(frameId);
+      clearTimeout(timer1);
+      clearTimeout(timer2);
+    };
+  }, [viewMode, mainSplit, rightSplit]);
+
   const isDraggingAny = isDraggingSidebar || isDraggingMain || isDraggingRight;
 
   return (
@@ -622,66 +640,67 @@ export default function IDE({ initialProject, initialFiles, user }: IDEProps) {
           className="w-1 bg-[#232936] hover:bg-[#E73F1E] active:bg-[#E73F1E] cursor-col-resize transition shrink-0 select-none z-20"
         />
 
-        {/* View Layouts */}
-        {viewMode === "split" && (
-          <div ref={workspaceRef} className="flex-1 flex overflow-hidden">
-            {/* Left: Editor */}
-            <div
-              style={{ width: `${mainSplit}%` }}
-              className={`h-full flex flex-col overflow-hidden ${isDraggingAny ? "pointer-events-none" : ""}`}
-            >
-              <Editor selectedFile={selectedFile} onChange={handleContentChange} />
-            </div>
+        {/* Persistent View Layout - Keeps Editor, Preview, and Terminal permanently mounted without resets */}
+        <div ref={workspaceRef} className="flex-1 flex overflow-hidden">
+          {/* Left: Editor Pane */}
+          <div
+            style={{
+              width: viewMode === "code" ? "100%" : `${mainSplit}%`,
+              display: viewMode === "split" || viewMode === "code" ? "flex" : "none",
+            }}
+            className={`h-full flex-col overflow-hidden ${isDraggingAny ? "pointer-events-none" : ""}`}
+          >
+            <Editor selectedFile={selectedFile} onChange={handleContentChange} />
+          </div>
 
-            {/* Main Split Resizer (Editor vs Right Column) */}
+          {/* Main Split Resizer (Editor vs Right Column) - Only in Split mode */}
+          {viewMode === "split" && (
             <div
               onMouseDown={() => setIsDraggingMain(true)}
               className="w-1 bg-[#232936] hover:bg-[#E73F1E] active:bg-[#E73F1E] cursor-col-resize transition shrink-0 select-none z-20"
             />
+          )}
 
-            {/* Right: Preview & Terminal */}
+          {/* Right Column: Preview & Terminal */}
+          <div
+            ref={rightPaneRef}
+            style={{
+              width: viewMode === "split" ? `${100 - mainSplit}%` : "100%",
+              display: viewMode === "code" ? "none" : "flex",
+            }}
+            className="h-full flex-col overflow-hidden"
+          >
+            {/* Preview Pane */}
             <div
-              ref={rightPaneRef}
-              style={{ width: `${100 - mainSplit}%` }}
-              className="h-full flex flex-col overflow-hidden"
+              style={{
+                height: viewMode === "preview" ? "100%" : `${rightSplit}%`,
+                display: viewMode === "split" || viewMode === "preview" ? "flex" : "none",
+              }}
+              className={`flex-col overflow-hidden ${isDraggingAny ? "pointer-events-none" : ""}`}
             >
-              <div
-                style={{ height: `${rightSplit}%` }}
-                className={`overflow-hidden ${isDraggingAny ? "pointer-events-none" : ""}`}
-              >
-                <Preview replId={replId} />
-              </div>
+              <Preview replId={replId} />
+            </div>
 
-              {/* Horizontal Resizer (Preview vs Terminal) */}
+            {/* Horizontal Resizer (Preview vs Terminal) - Only in Split mode */}
+            {viewMode === "split" && (
               <div
                 onMouseDown={() => setIsDraggingRight(true)}
                 className="h-1 bg-[#232936] hover:bg-[#E73F1E] active:bg-[#E73F1E] cursor-row-resize transition shrink-0 select-none z-20"
               />
+            )}
 
-              <div style={{ height: `${100 - rightSplit}%` }} className="overflow-hidden">
-                <Terminal socket={socket} replId={replId} />
-              </div>
+            {/* Terminal Pane */}
+            <div
+              style={{
+                height: viewMode === "terminal" ? "100%" : `${100 - rightSplit}%`,
+                display: viewMode === "split" || viewMode === "terminal" ? "flex" : "none",
+              }}
+              className="flex-1 flex-col overflow-hidden min-h-0"
+            >
+              <Terminal socket={socket} replId={replId} />
             </div>
           </div>
-        )}
-
-        {viewMode === "code" && (
-          <div className="flex-1 h-full overflow-hidden">
-            <Editor selectedFile={selectedFile} onChange={handleContentChange} />
-          </div>
-        )}
-
-        {viewMode === "preview" && (
-          <div className="flex-1 h-full overflow-hidden">
-            <Preview replId={replId} />
-          </div>
-        )}
-
-        {viewMode === "terminal" && (
-          <div className="flex-1 h-full overflow-hidden">
-            <Terminal socket={socket} replId={replId} />
-          </div>
-        )}
+        </div>
       </div>
 
       {/* Bottom Status Bar */}

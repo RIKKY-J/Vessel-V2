@@ -35,4 +35,6 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+*.tsbuildinfo
+
 

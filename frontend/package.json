@@ -9,6 +9,7 @@
     "start:next": "next start",
     "lint": "next lint",
     "seed-s3": "node ../scripts/seed-s3.js",
+    "setup-ssl": "node scripts/setup-ssl.js",
     "postinstall": "prisma generate"
   },
   "dependencies": {

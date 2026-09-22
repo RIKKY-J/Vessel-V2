@@ -1,10 +1,45 @@
-const { createServer } = require("http");
+const http = require("http");
+const https = require("https");
 const { parse } = require("url");
 const fs = require("fs");
 const path = require("path");
 const net = require("net");
 const next = require("next");
 const httpProxy = require("http-proxy");
+
+// ─── SSL Certificate Detection ───────────────────────────────────────────────
+const sslCertPath =
+  process.env.SSL_CERT_PATH ||
+  path.join(__dirname, "ssl", "cert.pem");
+const sslKeyPath =
+  process.env.SSL_KEY_PATH ||
+  path.join(__dirname, "ssl", "key.pem");
+
+let sslOptions = null;
+if (fs.existsSync(sslCertPath) && fs.existsSync(sslKeyPath)) {
+  try {
+    sslOptions = {
+      key: fs.readFileSync(sslKeyPath),
+      cert: fs.readFileSync(sslCertPath),
+    };
+    console.log(`[SSL] Loaded certificates from ${sslCertPath}`);
+  } catch (err) {
+    console.warn(`[SSL] Warning: Could not read certificate files: ${err.message}`);
+  }
+} else if (process.env.HTTPS === "true" || process.env.ENABLE_HTTPS === "true" || process.argv.includes("--https")) {
+  try {
+    console.log("[SSL] Generating local SSL certificates...");
+    require("./scripts/setup-ssl");
+    if (fs.existsSync(sslCertPath) && fs.existsSync(sslKeyPath)) {
+      sslOptions = {
+        key: fs.readFileSync(sslKeyPath),
+        cert: fs.readFileSync(sslCertPath),
+      };
+    }
+  } catch (e) {
+    console.warn("[SSL] Auto-generation error:", e.message);
+  }
+}
 
 // Enforce production mode by default for PM2 / server deployment
 process.env.NODE_ENV = process.env.NODE_ENV || "production";
@@ -198,7 +233,7 @@ async function handleDockerStatus(req, res, parsedUrl) {
 
 // ─── Server ──────────────────────────────────────────────────────────────────
 app.prepare().then(() => {
-  const server = createServer(async (req, res) => {
+  const requestHandler = async (req, res) => {
     const parsedUrl = parse(req.url, true);
 
     // Direct Docker diagnostic endpoint in server.js (instant, no build needed)
@@ -216,7 +251,30 @@ app.prepare().then(() => {
 
     // Default Next.js handler
     handle(req, res, parsedUrl);
-  });
+  };
+
+  const isHttps = !!sslOptions;
+  const server = isHttps
+    ? https.createServer(sslOptions, requestHandler)
+    : http.createServer(requestHandler);
+
+  // If a client attempts plain HTTP against the HTTPS port, redirect gracefully
+  if (isHttps) {
+    server.on("clientError", (err, socket) => {
+      if (err.code === "ERR_SSL_HTTP_REQUEST" || (err.message && err.message.includes("http request"))) {
+        const port = process.env.PORT || "3000";
+        const redirectPortStr = port === "443" ? "" : `:${port}`;
+        const host = "13.211.129.75";
+        const target = `https://${host}${redirectPortStr}/`;
+        socket.end(
+          `HTTP/1.1 302 Found\r\nLocation: ${target}\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n` +
+          `<html><head><meta http-equiv="refresh" content="0;url=${target}"></head><body>Redirecting to <a href="${target}">${target}</a></body></html>`
+        );
+        return;
+      }
+      socket.destroy();
+    });
+  }
 
   // Proxy WebSocket upgrade requests
   server.on("upgrade", async (req, socket, head) => {
@@ -243,6 +301,22 @@ app.prepare().then(() => {
   const port = parseInt(process.env.PORT || "3000", 10);
   server.listen(port, "0.0.0.0", (err) => {
     if (err) throw err;
-    console.log(`> Vessel unified server (${dev ? "dev" : "production"}) on port ${port}`);
+    const protocol = isHttps ? "https" : "http";
+    console.log(`> Vessel unified server (${dev ? "dev" : "production"}) on ${protocol}://0.0.0.0:${port}`);
+    if (isHttps) {
+      console.log(`> [HTTPS ACTIVE] Secure connection ready at https://13.211.129.75:${port}`);
+    }
   });
+
+  // Optional: Redirect port 80 to port 443 if running on standard HTTPS port 443
+  if (isHttps && port === 443) {
+    const httpRedirect = http.createServer((req, res) => {
+      const host = req.headers.host ? req.headers.host.split(":")[0] : "13.211.129.75";
+      res.writeHead(301, { Location: `https://${host}${req.url}` });
+      res.end();
+    });
+    httpRedirect.listen(80, "0.0.0.0", () => {
+      console.log("> HTTP Port 80 redirecting to HTTPS Port 443");
+    });
+  }
 });
