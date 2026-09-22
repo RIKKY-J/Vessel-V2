@@ -192,26 +192,32 @@ export default function IDE({ initialProject, initialFiles, user }: IDEProps) {
           setRunnerPort(res.data.runnerPort);
         }
 
-        if (res.data?.ready) {
+        if (res.data?.error) {
+          setSandboxStatusText(`Docker: ${res.data.error}`);
+        } else if (res.data?.ready) {
           if (pollInterval) clearInterval(pollInterval);
           setSandboxStatusText("Sandbox ready! Connecting terminal...");
           setIsSandboxReady(true);
         }
-      } catch {
+      } catch (err: any) {
         // Will retry
       }
     };
 
     axios
       .post(`/api/projects/${encodeURIComponent(replId)}/start`)
-      .then(() => {
+      .then((res) => {
         if (!isMounted) return;
+        if (res.data?.sandbox?.error) {
+          setSandboxStatusText(`Docker: ${res.data.sandbox.error}`);
+        }
         checkStatus();
         pollInterval = setInterval(checkStatus, 1500);
       })
       .catch((err) => {
-        console.warn("Start sandbox error (fallback to dev mode):", err);
-        if (isMounted) setIsSandboxReady(true);
+        const msg = err?.response?.data?.error || err.message;
+        console.warn("Start sandbox error:", msg);
+        if (isMounted) setSandboxStatusText(`Container start error: ${msg}`);
       });
 
     return () => {
@@ -220,18 +226,22 @@ export default function IDE({ initialProject, initialFiles, user }: IDEProps) {
     };
   }, [replId]);
 
-  // Connect WebSocket to Runner on EC2 host / port
+  // Connect WebSocket to Runner via unified Port 3000 proxy
   useEffect(() => {
     if (!isSandboxReady || !replId) return;
 
-    const host = typeof window !== "undefined" ? window.location.hostname : "localhost";
-    const port = runnerPort || 3001;
-    let wsUrl = process.env.NEXT_PUBLIC_RUNNER_WS_URL || `http://${host}:${port}`;
+    // Use window.location.origin (Port 3000) so no secondary ports are needed
+    const wsUrl =
+      process.env.NEXT_PUBLIC_RUNNER_WS_URL ||
+      (typeof window !== "undefined" ? window.location.origin : "http://localhost:3000");
+
     console.log(`[IDE] Connecting Socket.IO to ${wsUrl} for replId=${replId}`);
 
     const newSocket = io(wsUrl, {
       transports: ["websocket", "polling"],
       reconnection: true,
+      reconnectionAttempts: 15,
+      reconnectionDelay: 1000,
       timeout: 10000,
       query: { replId },
       auth: { replId },
@@ -241,12 +251,16 @@ export default function IDE({ initialProject, initialFiles, user }: IDEProps) {
       console.log(`[IDE] Socket connected to runner at ${wsUrl}`);
     });
 
+    newSocket.on("connect_error", (err) => {
+      console.warn(`[IDE] Socket connection error:`, err.message);
+    });
+
     setSocket(newSocket);
 
     return () => {
       newSocket.disconnect();
     };
-  }, [isSandboxReady, replId, runnerPort]);
+  }, [isSandboxReady, replId]);
 
   // Handle file editing
   const handleContentChange = (newContent: string) => {

@@ -29,17 +29,13 @@ export function getDockerClient(): Docker {
 }
 
 export async function checkDockerAvailability(): Promise<boolean> {
-  if (dockerCheckAttempted) return isDockerAvailable;
-  dockerCheckAttempted = true;
-
   try {
     const docker = getDockerClient();
     await docker.ping();
     isDockerAvailable = true;
-    console.log("[Docker] Successfully connected to Docker Engine daemon.");
     return true;
   } catch (err: any) {
-    console.warn(`[Docker] Daemon not reachable (${err.message}). Sandboxes will run in dev/mock mode.`);
+    console.warn(`[Docker] Daemon ping failed (${err.message}).`);
     isDockerAvailable = false;
     return false;
   }
@@ -66,20 +62,19 @@ export async function createSandbox(params: {
   const available = await checkDockerAvailability();
 
   if (!available) {
-    const appPort = 3000;
-    const runnerPort = 3001;
     const info: SandboxInfo = {
       replId,
-      status: "RUNNING",
-      appPort,
-      runnerPort,
+      status: "ERROR",
+      appPort: 3002,
+      runnerPort: 3001,
+      error: "Docker Engine is not running or not accessible. Run: sudo chmod 666 /var/run/docker.sock",
     };
     mockSandboxes.set(replId, info);
     return info;
   }
 
   const docker = getDockerClient();
-  const runnerImage = process.env.RUNNER_IMAGE || "rikkyj/runner:latest";
+  const runnerImage = process.env.RUNNER_IMAGE || "vessel-runner:latest";
 
   // Allocate host ports (favor predictable 3002/3001 for single-container setups)
   let hostAppPort = 3002;
@@ -167,7 +162,7 @@ export async function createSandbox(params: {
     // Fallback to dev mock mode
     const info: SandboxInfo = {
       replId,
-      status: "RUNNING",
+      status: "ERROR",
       appPort: hostAppPort,
       runnerPort: hostRunnerPort,
       error: err.message,

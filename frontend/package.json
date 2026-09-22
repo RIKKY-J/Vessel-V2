@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start",
+    "start": "node server.js",
+    "start:next": "next start",
     "lint": "next lint",
     "seed-s3": "node ../scripts/seed-s3.js",
     "postinstall": "prisma generate"
@@ -13,11 +14,13 @@
   "dependencies": {
     "@monaco-editor/react": "^4.6.0",
     "@prisma/client": "^5.19.0",
+    "@types/http-proxy": "^1.17.17",
     "aws-sdk": "^2.1556.0",
     "axios": "^1.6.7",
     "bcryptjs": "^2.4.3",
     "clsx": "^2.1.1",
     "dockerode": "^4.0.2",
+    "http-proxy": "^1.18.1",
     "jsonwebtoken": "^9.0.2",
     "lucide-react": "^0.395.0",
     "next": "^14.2.23",

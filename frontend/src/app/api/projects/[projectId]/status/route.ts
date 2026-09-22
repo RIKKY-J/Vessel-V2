@@ -26,13 +26,16 @@ export async function GET(
     }
 
     const status = await sandboxService.getStatus(replId, user.userId);
+    const isRunning = status.status === "RUNNING" && !status.error;
     return NextResponse.json({
       success: true,
-      ready: status.status === "RUNNING",
+      ready: isRunning,
       status: status.status,
       appPort: status.appPort,
       runnerPort: status.runnerPort,
-      statusText: status.status === "RUNNING" ? "Sandbox running" : "Sandbox stopped",
+      containerId: status.containerId,
+      error: status.error,
+      statusText: status.error ? `Docker Error: ${status.error}` : isRunning ? "Sandbox running" : "Sandbox stopped",
     });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });
