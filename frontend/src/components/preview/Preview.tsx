@@ -52,18 +52,21 @@ export default function Preview({ replId }: PreviewProps) {
         <div className="flex items-center gap-2 flex-1 min-w-0 mr-3">
           <Globe className="w-3.5 h-3.5 text-[#E73F1E]" />
           <div className="flex items-center gap-1.5 px-2.5 py-1 bg-[#0B0D11] border border-[#232936] rounded-md text-[11px] font-mono text-slate-300 flex-1 truncate">
-            <span className="text-emerald-400 font-bold">HTTPS</span>
+            <span className="text-emerald-400 font-bold">
+              {typeof window !== "undefined" && window.location.protocol === "https:" ? "HTTPS" : "HTTP"}
+            </span>
             <span className="text-slate-500">|</span>
             <span className="truncate">{previewUrl}</span>
           </div>
         </div>
 
-        <div className="flex items-center gap-1.5 shrink-0">
+        {/* Actions */}
+        <div className="flex items-center gap-1">
           <button
             onClick={refreshIframe}
             disabled={isAutoReloading}
             title="Refresh preview"
-            className="p-1 text-slate-400 hover:text-white rounded hover:bg-[#181C24] transition"
+            className="p-1 text-slate-400 hover:text-white rounded hover:bg-[#181C24] transition disabled:opacity-50"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${isAutoReloading ? "animate-spin text-[#E73F1E]" : ""}`} />
           </button>
@@ -84,7 +87,7 @@ export default function Preview({ replId }: PreviewProps) {
       <div className="flex-1 bg-white relative">
         <iframe
           key={iframeKey}
-          src={previewUrl}
+          src={`${previewUrl}${iframeKey > 0 ? `?_t=${iframeKey}` : ""}`}
           title={`Preview ${replId}`}
           className="w-full h-full border-none"
           sandbox="allow-forms allow-modals allow-pointer-lock allow-popups allow-same-origin allow-scripts"

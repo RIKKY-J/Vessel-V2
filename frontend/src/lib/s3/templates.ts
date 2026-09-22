@@ -69,7 +69,7 @@ app.listen(port, () => {
           version: "1.0.0",
           main: "index.js",
           scripts: {
-            start: "node index.js",
+            start: "node --watch index.js",
             dev: "node --watch index.js",
           },
           dependencies: {

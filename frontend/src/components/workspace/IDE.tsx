@@ -287,6 +287,9 @@ export default function IDE({ initialProject, initialFiles, user }: IDEProps) {
     };
   }, [isSandboxReady, replId]);
 
+  // Auto-save timer ref
+  const autoSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
+
   // Handle file editing
   const handleContentChange = (newContent: string) => {
     if (!selectedFile) return;
@@ -302,7 +305,24 @@ export default function IDE({ initialProject, initialFiles, user }: IDEProps) {
         content: newContent,
       });
     }
+
+    // Debounced auto-save to disk after 800ms of inactivity
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current);
+    }
+    autoSaveTimerRef.current = setTimeout(() => {
+      handleSaveToS3();
+    }, 800);
   };
+
+  // Clean up auto-save timer on unmount
+  useEffect(() => {
+    return () => {
+      if (autoSaveTimerRef.current) {
+        clearTimeout(autoSaveTimerRef.current);
+      }
+    };
+  }, []);
 
   // Save active files to disk / S3
   const handleSaveToS3 = async () => {
@@ -330,6 +350,15 @@ export default function IDE({ initialProject, initialFiles, user }: IDEProps) {
           files: filesToSync,
         });
         dirtyFilesRef.current.clear();
+
+        // Dispatch preview reload so the webview stays synchronized with saved files
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(
+            new CustomEvent("vessel:file-updated", {
+              detail: { replId, path: selectedFile?.path },
+            })
+          );
+        }
       } catch (err) {
         console.warn("Save files error:", err);
       }
@@ -338,7 +367,7 @@ export default function IDE({ initialProject, initialFiles, user }: IDEProps) {
     setIsSaving(false);
   };
 
-  // Run command handler (sends directly into terminal PTY and triggers backend runner)
+  // Run command handler (saves files first, sends into terminal PTY, and triggers backend runner)
   const handleRun = async (overrideCmd?: string) => {
     if (isRunning || !replId) return;
     setIsRunning(true);
@@ -347,9 +376,15 @@ export default function IDE({ initialProject, initialFiles, user }: IDEProps) {
       setViewMode("split");
     }
 
-    const cmdToRun = overrideCmd || runCommand;
+    // 1. Ensure all active/modified files are written to /workspace before running
+    await handleSaveToS3();
 
-    // 1. Send Ctrl+C followed by the command into the terminal PTY for live terminal output
+    const cmdToRun =
+      overrideCmd ||
+      runCommand ||
+      (initialProject.language === "python" ? "python3 main.py" : "node --watch index.js");
+
+    // 2. Send Ctrl+C followed by the command into the terminal PTY for live terminal output
     if (socket && socket.connected) {
       socket.emit("terminalData", {
         data: `\x03\r\n${cmdToRun}\r\n`,
@@ -357,7 +392,7 @@ export default function IDE({ initialProject, initialFiles, user }: IDEProps) {
       });
     }
 
-    // 2. Also send backend runner API call
+    // 3. Also send backend runner API call
     try {
       await axios.post(`/api/projects/${encodeURIComponent(replId)}/run`, {
         command: cmdToRun,
@@ -368,7 +403,7 @@ export default function IDE({ initialProject, initialFiles, user }: IDEProps) {
       console.warn("Error running project:", err);
     }
 
-    // 3. Trigger auto-reload in preview iframe once server starts listening
+    // 4. Trigger auto-reload in preview iframe once server starts listening
     setTimeout(() => {
       if (typeof window !== "undefined") {
         window.dispatchEvent(
