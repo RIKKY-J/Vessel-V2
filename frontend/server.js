@@ -13,11 +13,6 @@ const app = next({ dev, dir: __dirname });
 const handle = app.getRequestHandler();
 
 // ─── Dynamic Runner Port Discovery ───────────────────────────────────────────
-// We try multiple strategies to find the active runner port:
-// 1. Read from data/active-sandboxes.json (written by docker.ts)
-// 2. Probe common runner ports (3001, then 3002-3010)
-// 3. Fall back to 3001
-
 let cachedRunnerPort = null;
 let lastPortCheck = 0;
 
@@ -27,7 +22,6 @@ function readPortFromFile(replId) {
     if (fs.existsSync(file)) {
       const data = JSON.parse(fs.readFileSync(file, "utf8"));
       if (replId && data[replId]?.runnerPort) return data[replId].runnerPort;
-      // Return most recent entry
       const keys = Object.keys(data);
       if (keys.length > 0) {
         const last = data[keys[keys.length - 1]];
@@ -60,12 +54,11 @@ function probePort(port) {
 
 async function discoverRunnerPort(replId) {
   const now = Date.now();
-  // Cache for 5 seconds to avoid hammering probes
-  if (cachedRunnerPort && now - lastPortCheck < 5000) {
+  if (cachedRunnerPort && now - lastPortCheck < 3000) {
     return cachedRunnerPort;
   }
 
-  // Strategy 1: Read from persisted file
+  // Strategy 1: Read from persisted file and verify alive
   const fromFile = readPortFromFile(replId);
   if (fromFile) {
     const alive = await probePort(fromFile);
@@ -79,7 +72,7 @@ async function discoverRunnerPort(replId) {
   // Strategy 2: Probe common runner ports
   const candidates = [3001, 3002, 3003, 3004, 3005, 40000, 40001, 40002];
   for (const port of candidates) {
-    if (port === parseInt(process.env.PORT || "3000")) continue; // skip Next.js port
+    if (port === parseInt(process.env.PORT || "3000")) continue;
     const alive = await probePort(port);
     if (alive) {
       cachedRunnerPort = port;
@@ -89,13 +82,10 @@ async function discoverRunnerPort(replId) {
     }
   }
 
-  // Strategy 3: Default
-  cachedRunnerPort = 3001;
-  lastPortCheck = now;
-  return 3001;
+  // Strategy 3: Fall back to file value or 3001
+  return fromFile || 3001;
 }
 
-// Invalidate cache when we get proxy errors so we re-probe next time
 function invalidatePortCache() {
   cachedRunnerPort = null;
   lastPortCheck = 0;
@@ -110,23 +100,111 @@ const proxy = httpProxy.createProxyServer({
 proxy.on("error", (err, req, resOrSocket) => {
   console.warn("[Proxy] Error:", err.message);
   invalidatePortCache();
-  // For HTTP responses
   if (resOrSocket && typeof resOrSocket.writeHead === "function" && !resOrSocket.headersSent) {
     try {
       resOrSocket.writeHead(502, { "Content-Type": "application/json" });
-      resOrSocket.end(JSON.stringify({ error: "Runner offline", message: err.message }));
+      resOrSocket.end(JSON.stringify({ error: "Runner offline or booting", message: err.message }));
     } catch {}
   }
-  // For raw sockets (WebSocket upgrades), just destroy
   if (resOrSocket && typeof resOrSocket.destroy === "function" && !resOrSocket.writeHead) {
     try { resOrSocket.destroy(); } catch {}
   }
 });
 
+// ─── Direct Docker Diagnostics (Bypasses Next.js Compilation) ─────────────────
+async function handleDockerStatus(req, res, parsedUrl) {
+  res.setHeader("Content-Type", "application/json");
+  try {
+    const Docker = require("dockerode");
+    const isWindows = process.platform === "win32";
+    const docker = new Docker(
+      process.env.DOCKER_HOST
+        ? { host: process.env.DOCKER_HOST }
+        : isWindows
+        ? { socketPath: "//./pipe/docker_engine" }
+        : { socketPath: "/var/run/docker.sock" }
+    );
+
+    // Optional cleanup action: /api/docker-status?action=cleanup
+    if (parsedUrl.query?.action === "cleanup") {
+      const all = await docker.listContainers({ all: true });
+      let removedCount = 0;
+      for (const c of all) {
+        if (c.Names.some((n) => n.includes("vessel-"))) {
+          try {
+            const cont = docker.getContainer(c.Id);
+            if (c.State === "running") await cont.stop({ t: 2 });
+            await cont.remove({ force: true });
+            removedCount++;
+          } catch {}
+        }
+      }
+      res.end(JSON.stringify({ success: true, message: `Removed ${removedCount} vessel containers` }));
+      return;
+    }
+
+    await docker.ping();
+    const rawContainers = await docker.listContainers({ all: true });
+    const containers = await Promise.all(
+      rawContainers.map(async (c) => {
+        let logs = "";
+        let inspectData = null;
+        try {
+          const cont = docker.getContainer(c.Id);
+          inspectData = await cont.inspect();
+          const logBuf = await cont.logs({ stdout: true, stderr: true, tail: 50 });
+          logs = logBuf ? logBuf.toString("utf8") : "";
+        } catch (e) {
+          logs = `Logs error: ${e.message}`;
+        }
+        return {
+          id: c.Id.substring(0, 12),
+          names: c.Names,
+          image: c.Image,
+          state: c.State,
+          status: c.Status,
+          exitCode: inspectData?.State?.ExitCode,
+          error: inspectData?.State?.Error,
+          startedAt: inspectData?.State?.StartedAt,
+          finishedAt: inspectData?.State?.FinishedAt,
+          ports: c.Ports,
+          logs,
+        };
+      })
+    );
+
+    let activeSandboxes = {};
+    try {
+      const p = path.join(__dirname, "data", "active-sandboxes.json");
+      if (fs.existsSync(p)) activeSandboxes = JSON.parse(fs.readFileSync(p, "utf8"));
+    } catch {}
+
+    res.end(
+      JSON.stringify(
+        {
+          dockerAvailable: true,
+          containers,
+          activeSandboxes,
+          serverPort: process.env.PORT || "3000",
+        },
+        null,
+        2
+      )
+    );
+  } catch (err) {
+    res.end(JSON.stringify({ dockerAvailable: false, error: err.message }, null, 2));
+  }
+}
+
 // ─── Server ──────────────────────────────────────────────────────────────────
 app.prepare().then(() => {
   const server = createServer(async (req, res) => {
     const parsedUrl = parse(req.url, true);
+
+    // Direct Docker diagnostic endpoint in server.js (instant, no build needed)
+    if (parsedUrl.pathname === "/api/docker-status") {
+      return handleDockerStatus(req, res, parsedUrl);
+    }
 
     // Proxy Socket.IO HTTP long-polling to active runner container
     if (parsedUrl.pathname && parsedUrl.pathname.startsWith("/socket.io/")) {

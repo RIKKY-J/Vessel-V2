@@ -225,6 +225,27 @@ export async function createSandbox(params: {
     await container.start();
     console.log(`[Docker] Sandbox container ${containerName} started on ports app:${hostAppPort}, runner:${hostRunnerPort}`);
 
+    // Verify container stays running after startup
+    await new Promise((r) => setTimeout(r, 600));
+    const startInspect = await container.inspect();
+    if (!startInspect.State.Running) {
+      let exitLogs = "";
+      try {
+        const logBuf = await container.logs({ stdout: true, stderr: true, tail: 30 });
+        exitLogs = logBuf ? logBuf.toString("utf8").trim() : "";
+      } catch {}
+      const errMsg = `Container exited immediately with code ${startInspect.State.ExitCode}${exitLogs ? `: ${exitLogs}` : ""}`;
+      console.warn(`[Docker] ${errMsg}`);
+      return {
+        replId,
+        containerId: container.id,
+        status: "ERROR",
+        appPort: hostAppPort,
+        runnerPort: hostRunnerPort,
+        error: errMsg,
+      };
+    }
+
     return {
       replId,
       containerId: container.id,
@@ -299,13 +320,29 @@ export async function getSandboxStatus(replId: string): Promise<SandboxInfo> {
       persistSandboxPorts(replId, ports);
     }
 
+    let errorMsg: string | undefined = undefined;
+    if (!inspect.State.Running) {
+      if (inspect.State.ExitCode !== 0) {
+        let exitLogs = "";
+        try {
+          const logBuf = await container.logs({ stdout: true, stderr: true, tail: 20 });
+          exitLogs = logBuf ? logBuf.toString("utf8").trim() : "";
+        } catch {}
+        errorMsg = `Container exited with code ${inspect.State.ExitCode}${exitLogs ? `: ${exitLogs}` : ""}`;
+      }
+    }
+
+    // Check if the runner daemon port is actually accepting connections
+    const isPortActive = inspect.State.Running ? !(await isPortFree(ports?.runnerPort || 3001)) : false;
+
     return {
       replId,
       containerId: inspect.Id,
-      status: inspect.State.Running ? "RUNNING" : "STOPPED",
+      status: inspect.State.Running ? (isPortActive ? "RUNNING" : "STARTING") : "STOPPED",
       appPort: ports?.appPort || 3002,
       runnerPort: ports?.runnerPort || 3001,
       containerIp: inspect.NetworkSettings.IPAddress,
+      error: errorMsg,
     };
   } catch {
     return {

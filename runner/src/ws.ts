@@ -10,50 +10,52 @@ const terminalManager = new TerminalManager();
 export function initWs(httpServer: HttpServer) {
     const io = new Server(httpServer, {
         cors: {
-            // Should restrict this more!
             origin: "*",
             methods: ["GET", "POST"],
         },
     });
       
     io.on("connection", async (socket) => {
-        // Auth checks should happen here
-        const host = socket.handshake.headers.host;
-        console.log(`[WS] New connection: socket.id=${socket.id}, host=${host}, transport=${socket.conn.transport.name}`);
-        // Extract replId from query, auth, environment, or host header
-        const replId =
-            (socket.handshake.query?.replId as string) ||
-            (socket.handshake.auth?.replId as string) ||
-            process.env.REPL_ID ||
-            host?.split('.')[0];
-    
-        if (!replId) {
-            console.log("[WS] No replId found, disconnecting");
-            socket.disconnect();
-            terminalManager.clear(socket.id);
-            return;
-        }
-
-        console.log(`[WS] replId=${replId}, checking /workspace`);
-        let rootContent = await fetchDir("/workspace", "");
-
-        // If workspace is empty, fetch files from S3 code folder as fallback
-        if (!rootContent || rootContent.length === 0) {
-            console.log(`[WS] /workspace is empty. Attempting S3 fallback fetch for replId=${replId}...`);
-            try {
-                await fetchS3Folder(`code/${replId}`, "/workspace");
-                rootContent = await fetchDir("/workspace", "");
-                console.log(`[WS] Fallback fetch complete. Files found: ${rootContent.length}`);
-            } catch (err) {
-                console.error("[WS] Fallback S3 fetch error:", err);
+        try {
+            const host = socket.handshake.headers.host;
+            console.log(`[WS] New connection: socket.id=${socket.id}, host=${host}, transport=${socket.conn.transport.name}`);
+            
+            const replId =
+                (socket.handshake.query?.replId as string) ||
+                (socket.handshake.auth?.replId as string) ||
+                process.env.REPL_ID ||
+                host?.split('.')[0];
+        
+            if (!replId) {
+                console.log("[WS] No replId found, disconnecting");
+                socket.disconnect();
+                terminalManager.clear(socket.id);
+                return;
             }
+
+            console.log(`[WS] replId=${replId}, checking /workspace`);
+            let rootContent = await fetchDir("/workspace", "");
+
+            // If workspace is empty, fetch files from S3 code folder as fallback
+            if (!rootContent || rootContent.length === 0) {
+                console.log(`[WS] /workspace is empty. Attempting S3 fallback fetch for replId=${replId}...`);
+                try {
+                    await fetchS3Folder(`code/${replId}`, "/workspace");
+                    rootContent = await fetchDir("/workspace", "");
+                    console.log(`[WS] Fallback fetch complete. Files found: ${rootContent.length}`);
+                } catch (err) {
+                    console.error("[WS] Fallback S3 fetch error:", err);
+                }
+            }
+
+            socket.emit("loaded", {
+                rootContent: rootContent || []
+            });
+
+            initHandlers(socket, replId);
+        } catch (connErr) {
+            console.error("[WS] Connection initialization error:", connErr);
         }
-
-        socket.emit("loaded", {
-            rootContent
-        });
-
-        initHandlers(socket, replId);
     });
 }
 
@@ -61,47 +63,69 @@ function initHandlers(socket: Socket, replId: string) {
 
     socket.on("disconnect", () => {
         console.log(`[WS] User disconnected: socket.id=${socket.id}`);
+        terminalManager.clear(socket.id);
     });
 
     socket.on("fetchDir", async (dir: string, callback) => {
-        const dirPath = `/workspace/${dir}`;
-        const contents = await fetchDir(dirPath, dir);
-        callback(contents);
+        try {
+            const dirPath = `/workspace/${dir}`;
+            const contents = await fetchDir(dirPath, dir);
+            if (typeof callback === "function") callback(contents);
+        } catch (err) {
+            console.warn("[WS] fetchDir error:", err);
+            if (typeof callback === "function") callback([]);
+        }
     });
 
     socket.on("fetchContent", async ({ path: filePath }: { path: string }, callback) => {
-        const fullPath = `/workspace/${filePath}`;
-        const data = await fetchFileContent(fullPath);
-        callback(data);
+        try {
+            const fullPath = `/workspace/${filePath}`;
+            const data = await fetchFileContent(fullPath);
+            if (typeof callback === "function") callback(data);
+        } catch (err) {
+            console.warn("[WS] fetchContent error:", err);
+            if (typeof callback === "function") callback("");
+        }
     });
 
-    // TODO: contents should be diff, not full file
-    // Should be validated for size
-    // Should be throttled before updating S3 (or use an S3 mount)
     socket.on("updateContent", async ({ path: filePath, content }: { path: string, content: string }) => {
-        const fullPath =  `/workspace/${filePath}`;
-        await saveFile(fullPath, content);
-        await saveToS3(`code/${replId}`, filePath, content);
+        try {
+            const fullPath = `/workspace/${filePath}`;
+            await saveFile(fullPath, content);
+            await saveToS3(`code/${replId}`, filePath, content);
+        } catch (err) {
+            console.warn("[WS] updateContent error:", err);
+        }
     });
 
     socket.on("requestTerminal", async () => {
         console.log(`[WS] requestTerminal from socket.id=${socket.id}`);
-        terminalManager.createPty(socket.id, replId, (data, id) => {
-            const buf = Buffer.from(data,"utf-8");
-            console.log(`[WS] Sending terminal data to client: ${buf.length} bytes, preview: ${JSON.stringify(data.substring(0, 80))}`);
-            socket.emit('terminal', {
-                data: buf
+        try {
+            terminalManager.createPty(socket.id, replId, (data, id) => {
+                const buf = Buffer.from(data, "utf-8");
+                socket.emit('terminal', {
+                    data: buf
+                });
             });
-        });
+        } catch (err) {
+            console.error("[WS] requestTerminal error:", err);
+        }
     });
     
-    socket.on("terminalData", async ({ data }: { data: string, terminalId: number }) => {
-        console.log(`[WS] Received terminalData from client: ${JSON.stringify(data)}`);
-        terminalManager.write(socket.id, data);
+    socket.on("terminalData", async ({ data }: { data: string, terminalId?: number }) => {
+        try {
+            terminalManager.write(socket.id, data);
+        } catch (err) {
+            console.warn("[WS] terminalData error:", err);
+        }
     });
 
     socket.on("terminalResize", ({ cols, rows }: { cols: number, rows: number }) => {
-        terminalManager.resize(socket.id, cols, rows);
+        try {
+            terminalManager.resize(socket.id, cols, rows);
+        } catch (err) {
+            console.warn("[WS] terminalResize error:", err);
+        }
     });
 
     socket.on("saveAll", async (callback) => {

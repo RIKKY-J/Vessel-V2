@@ -35,7 +35,13 @@ export async function GET(
       runnerPort: status.runnerPort,
       containerId: status.containerId,
       error: status.error,
-      statusText: status.error ? `Docker Error: ${status.error}` : isRunning ? "Sandbox running" : "Sandbox stopped",
+      statusText: status.error
+        ? `Docker Error: ${status.error}`
+        : isRunning
+        ? "Sandbox running"
+        : status.status === "STARTING"
+        ? "Container booting runner daemon..."
+        : "Sandbox stopped",
     });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });

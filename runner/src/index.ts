@@ -1,15 +1,45 @@
-import dotenv from "dotenv"
-dotenv.config()
+import dotenv from "dotenv";
+dotenv.config();
+import fs from "fs";
 import express from "express";
 import { createServer } from "http";
 import { initWs } from "./ws";
 import cors from "cors";
 import { saveFolderToS3 } from "./aws";
+import { runUserProcess } from "./process";
+
+// Prevent container crash on unhandled errors
+process.on("uncaughtException", (err) => {
+  console.error("[Runner] FATAL Uncaught Exception:", err);
+});
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("[Runner] Unhandled Rejection at:", promise, "reason:", reason);
+});
+
+// Ensure /workspace exists
+if (!fs.existsSync("/workspace")) {
+  try {
+    fs.mkdirSync("/workspace", { recursive: true });
+    console.log("[Runner] Created /workspace directory successfully.");
+  } catch (err: any) {
+    console.warn("[Runner] Failed to create /workspace:", err?.message || err);
+  }
+}
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 const httpServer = createServer(app);
+
+// Runner health check endpoint
+app.get("/health", (req, res) => {
+  return res.json({
+    status: "ok",
+    uptime: process.uptime(),
+    replId: process.env.REPL_ID || null,
+    workspaceExists: fs.existsSync("/workspace"),
+  });
+});
 
 app.post("/sync", async (req, res) => {
   const replId = req.body?.replId || process.env.REPL_ID;
@@ -24,8 +54,6 @@ app.post("/sync", async (req, res) => {
   }
 });
 
-import { runUserProcess } from "./process";
-
 app.post("/run", async (req, res) => {
   const { command } = req.body;
   const result = runUserProcess(command || "node --watch index.js");
@@ -36,7 +64,7 @@ initWs(httpServer);
 
 const port = process.env.PORT || 3001;
 httpServer.listen(port, () => {
-  console.log(`listening on *:${port}`);
+  console.log(`[Runner] Daemon listening on port ${port}`);
 });
 
 const handleGracefulShutdown = async (signal: string) => {

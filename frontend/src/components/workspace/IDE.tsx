@@ -211,6 +211,8 @@ export default function IDE({ initialProject, initialFiles, user }: IDEProps) {
           if (pollInterval) clearInterval(pollInterval);
           setSandboxStatusText("Sandbox ready! Connecting terminal...");
           setIsSandboxReady(true);
+        } else if (res.data?.statusText) {
+          setSandboxStatusText(res.data.statusText);
         }
       } catch (err: any) {
         // Will retry
