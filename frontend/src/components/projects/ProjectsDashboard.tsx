@@ -283,9 +283,9 @@ export default function ProjectsDashboard({ initialProjects, user }: ProjectsDas
                   </div>
 
                   <div className="pt-4 border-t border-[#1C212B] flex items-center justify-between">
-                    <span className="text-[10px] text-slate-500 font-mono flex items-center gap-1">
+                    <span suppressHydrationWarning className="text-[10px] text-slate-500 font-mono flex items-center gap-1">
                       <Clock className="w-3 h-3" />
-                      {p.created_at ? new Date(p.created_at).toLocaleDateString() : "Recent"}
+                      {p.created_at ? new Date(p.created_at).toISOString().split("T")[0] : "Recent"}
                     </span>
 
                     <Link

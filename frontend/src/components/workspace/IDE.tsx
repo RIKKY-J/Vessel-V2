@@ -16,12 +16,25 @@ import {
   Save,
   CheckCircle2,
 } from "lucide-react";
+import dynamic from "next/dynamic";
 import { File, RemoteFile, Type } from "@/components/editor/file-manager";
 import Editor from "@/components/editor/Editor";
 import FileExplorer from "@/components/editor/FileExplorer";
-import Terminal from "@/components/terminal/Terminal";
 import Preview from "@/components/preview/Preview";
 import RunButton from "./RunButton";
+
+const Terminal = dynamic(() => import("@/components/terminal/Terminal"), {
+  ssr: false,
+  loading: () => (
+    <div className="flex-1 h-full flex flex-col items-center justify-center bg-[#0B0D11] text-slate-400 font-mono text-xs select-none">
+      <div className="flex items-center gap-2 mb-1">
+        <div className="w-2.5 h-2.5 rounded-full border-2 border-[#E73F1E] border-t-transparent animate-spin" />
+        <span className="text-white font-medium">Initializing Terminal Engine...</span>
+      </div>
+      <span className="text-[11px] text-slate-500">Loading xterm.js PTY subsystem</span>
+    </div>
+  ),
+});
 
 type ViewMode = "split" | "code" | "preview" | "terminal";
 
@@ -448,7 +461,13 @@ export default function IDE({ initialProject, initialFiles, user }: IDEProps) {
 
         {/* Center: Run & Save Controls */}
         <div className="flex items-center gap-2">
-          <RunButton isRunning={isRunning} onRun={() => handleRun()} />
+          <RunButton
+            isRunning={isRunning}
+            language={language}
+            runCommand={runCommand}
+            onRun={(cmd) => handleRun(cmd)}
+            onCommandChange={(cmd) => setRunCommand(cmd)}
+          />
 
           <button
             onClick={handleSaveToS3}

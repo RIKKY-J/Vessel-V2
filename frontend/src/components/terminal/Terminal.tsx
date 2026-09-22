@@ -2,7 +2,9 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { Socket } from "socket.io-client";
-import { Terminal as TerminalIcon, RefreshCw, Copy, Check, Loader2 } from "lucide-react";
+import { Terminal as TerminalIcon, Copy, Check } from "lucide-react";
+import { Terminal as XTerm } from "xterm";
+import { FitAddon } from "xterm-addon-fit";
 
 interface TerminalProps {
   socket: Socket | null;
@@ -49,75 +51,84 @@ function decodeData(buf: any): string {
 
 export default function Terminal({ socket, replId }: TerminalProps) {
   const terminalRef = useRef<HTMLDivElement>(null);
-  const termInstanceRef = useRef<any>(null);
-  const fitAddonRef = useRef<any>(null);
+  const termInstanceRef = useRef<XTerm | null>(null);
+  const fitAddonRef = useRef<FitAddon | null>(null);
+  const socketRef = useRef<Socket | null>(socket);
   const [copied, setCopied] = useState(false);
   const [status, setStatus] = useState<"connecting" | "active" | "disconnected">("connecting");
 
+  // Keep socketRef synchronized on every render so callbacks never hold stale references
   useEffect(() => {
-    let term: any = null;
-    let fitAddon: any = null;
+    socketRef.current = socket;
+  }, [socket]);
 
-    const initTerm = async () => {
-      if (!terminalRef.current) return;
+  // Initialize xterm instance synchronously inside client component
+  useEffect(() => {
+    if (!terminalRef.current) return;
 
-      const { Terminal: XTerm } = await import("xterm");
-      const { FitAddon } = await import("xterm-addon-fit");
-      // @ts-ignore
-      await import("xterm/css/xterm.css");
+    const term = new XTerm({
+      cursorBlink: true,
+      fontFamily: "'JetBrains Mono', 'Fira Code', Menlo, Monaco, 'Courier New', monospace",
+      fontSize: 13,
+      lineHeight: 1.25,
+      theme: {
+        background: "#0B0D11",
+        foreground: "#E2E8F0",
+        cursor: "#E73F1E",
+        selectionBackground: "#334155",
+        black: "#1E293B",
+        red: "#EF4444",
+        green: "#10B981",
+        yellow: "#F59E0B",
+        blue: "#3B82F6",
+        magenta: "#8B5CF6",
+        cyan: "#06B6D4",
+        white: "#F8FAFC",
+      },
+      convertEol: true,
+    });
 
-      term = new XTerm({
-        cursorBlink: true,
-        fontFamily: "'JetBrains Mono', 'Fira Code', Menlo, Monaco, 'Courier New', monospace",
-        fontSize: 13,
-        lineHeight: 1.25,
-        theme: {
-          background: "#0B0D11",
-          foreground: "#E2E8F0",
-          cursor: "#E73F1E",
-          selectionBackground: "#334155",
-          black: "#1E293B",
-          red: "#EF4444",
-          green: "#10B981",
-          yellow: "#F59E0B",
-          blue: "#3B82F6",
-          magenta: "#8B5CF6",
-          cyan: "#06B6D4",
-          white: "#F8FAFC",
-        },
-        convertEol: true,
-      });
-
-      fitAddon = new FitAddon();
-      term.loadAddon(fitAddon);
-      term.open(terminalRef.current);
+    const fitAddon = new FitAddon();
+    term.loadAddon(fitAddon);
+    term.open(terminalRef.current);
+    try {
       fitAddon.fit();
+    } catch {}
 
-      termInstanceRef.current = term;
-      fitAddonRef.current = fitAddon;
+    termInstanceRef.current = term;
+    fitAddonRef.current = fitAddon;
 
-      term.writeln("\x1b[38;2;231;63;30m=== Vessel Docker Sandbox Terminal ===\x1b[0m");
-      term.writeln("\x1b[90mConnected via WebSocket to isolated container bash PTY.\x1b[0m\n");
+    term.writeln("\x1b[38;2;231;63;30m=== Vessel Docker Sandbox Terminal ===\x1b[0m");
+    term.writeln("\x1b[90mConnected via WebSocket to isolated container bash PTY.\x1b[0m\n");
 
-      // Handle user keystrokes
-      term.onData((data: string) => {
-        if (socket && socket.connected) {
-          socket.emit("terminalData", { data, terminalId: 0 });
-        }
-      });
+    // If socket is already connected when terminal mounts, request PTY
+    const activeSocket = socketRef.current;
+    if (activeSocket && activeSocket.connected) {
+      setStatus("active");
+      activeSocket.emit("requestTerminal");
+      activeSocket.emit("terminalResize", { cols: term.cols, rows: term.rows });
+    }
 
-      // Handle resize
-      term.onResize(({ cols, rows }: { cols: number; rows: number }) => {
-        if (socket && socket.connected) {
-          socket.emit("terminalResize", { cols, rows });
-        }
-      });
-    };
+    // Keystroke forwarding (uses socketRef so it never has a stale socket closure)
+    const dataSub = term.onData((data: string) => {
+      const s = socketRef.current;
+      if (s && s.connected) {
+        s.emit("terminalData", { data, terminalId: 0 });
+      }
+    });
 
-    initTerm();
+    // Resize forwarding
+    const resizeSub = term.onResize(({ cols, rows }: { cols: number; rows: number }) => {
+      const s = socketRef.current;
+      if (s && s.connected) {
+        s.emit("terminalResize", { cols, rows });
+      }
+    });
 
     const handleWindowResize = () => {
-      fitAddonRef.current?.fit();
+      try {
+        fitAddon.fit();
+      } catch {}
     };
     window.addEventListener("resize", handleWindowResize);
 
@@ -125,21 +136,33 @@ export default function Terminal({ socket, replId }: TerminalProps) {
     if (typeof ResizeObserver !== "undefined" && terminalRef.current) {
       resizeObserver = new ResizeObserver(() => {
         try {
-          fitAddonRef.current?.fit();
+          fitAddon.fit();
         } catch {}
       });
       resizeObserver.observe(terminalRef.current);
     }
 
+    // Auto-focus terminal so typing works immediately
+    setTimeout(() => {
+      try {
+        term.focus();
+      } catch {}
+    }, 150);
+
     return () => {
       window.removeEventListener("resize", handleWindowResize);
       resizeObserver?.disconnect();
-      term?.dispose();
+      dataSub.dispose();
+      resizeSub.dispose();
+      term.dispose();
+      termInstanceRef.current = null;
+      fitAddonRef.current = null;
     };
   }, []);
 
-  // Wire up socket events
+  // Handle Socket.IO connection and incoming terminal stream
   useEffect(() => {
+    socketRef.current = socket;
     if (!socket) {
       setStatus("connecting");
       return;
@@ -149,11 +172,13 @@ export default function Terminal({ socket, replId }: TerminalProps) {
       setStatus("active");
       socket.emit("requestTerminal");
       if (fitAddonRef.current && termInstanceRef.current) {
-        fitAddonRef.current.fit();
-        socket.emit("terminalResize", {
-          cols: termInstanceRef.current.cols,
-          rows: termInstanceRef.current.rows,
-        });
+        try {
+          fitAddonRef.current.fit();
+          socket.emit("terminalResize", {
+            cols: termInstanceRef.current.cols,
+            rows: termInstanceRef.current.rows,
+          });
+        } catch {}
       }
     };
 
@@ -239,7 +264,15 @@ export default function Terminal({ socket, replId }: TerminalProps) {
       </div>
 
       {/* Terminal Viewport */}
-      <div className="flex-1 p-2 overflow-hidden" ref={terminalRef} />
+      <div
+        className="flex-1 p-2 overflow-hidden cursor-text"
+        ref={terminalRef}
+        onClick={() => {
+          try {
+            termInstanceRef.current?.focus();
+          } catch {}
+        }}
+      />
     </div>
   );
 }
