@@ -243,35 +243,45 @@ export default function IDE({ initialProject, initialFiles, user }: IDEProps) {
   useEffect(() => {
     if (!isSandboxReady || !replId) return;
 
-    // Use window.location.origin (Port 3000) so no secondary ports are needed
-    const wsUrl =
-      process.env.NEXT_PUBLIC_RUNNER_WS_URL ||
-      (typeof window !== "undefined" ? window.location.origin : "http://localhost:3000");
+    // Give the runner container a few seconds to fully boot its Socket.IO server
+    let socketInstance: ReturnType<typeof io> | null = null;
+    const connectDelay = setTimeout(() => {
+      // Use window.location.origin (Port 3000) so no secondary ports are needed
+      const wsUrl =
+        process.env.NEXT_PUBLIC_RUNNER_WS_URL ||
+        (typeof window !== "undefined" ? window.location.origin : "http://localhost:3000");
 
-    console.log(`[IDE] Connecting Socket.IO to ${wsUrl} for replId=${replId}`);
+      console.log(`[IDE] Connecting Socket.IO to ${wsUrl} for replId=${replId}`);
 
-    const newSocket = io(wsUrl, {
-      transports: ["websocket", "polling"],
-      reconnection: true,
-      reconnectionAttempts: 15,
-      reconnectionDelay: 1000,
-      timeout: 10000,
-      query: { replId },
-      auth: { replId },
-    });
+      const newSocket = io(wsUrl, {
+        // Start with polling (works through HTTP proxy), then upgrade to websocket
+        transports: ["polling", "websocket"],
+        reconnection: true,
+        reconnectionAttempts: 30,
+        reconnectionDelay: 2000,
+        reconnectionDelayMax: 5000,
+        timeout: 15000,
+        query: { replId },
+        auth: { replId },
+      });
 
-    newSocket.on("connect", () => {
-      console.log(`[IDE] Socket connected to runner at ${wsUrl}`);
-    });
+      newSocket.on("connect", () => {
+        console.log(`[IDE] Socket connected to runner at ${wsUrl}, transport=${newSocket.io?.engine?.transport?.name}`);
+      });
 
-    newSocket.on("connect_error", (err) => {
-      console.warn(`[IDE] Socket connection error:`, err.message);
-    });
+      newSocket.on("connect_error", (err) => {
+        console.warn(`[IDE] Socket connection error:`, err.message);
+      });
 
-    setSocket(newSocket);
+      socketInstance = newSocket;
+      setSocket(newSocket);
+    }, 3000); // Wait 3s for runner to fully start
 
     return () => {
-      newSocket.disconnect();
+      clearTimeout(connectDelay);
+      if (socketInstance) {
+        socketInstance.disconnect();
+      }
     };
   }, [isSandboxReady, replId]);
 
