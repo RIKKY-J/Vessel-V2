@@ -1,13 +1,70 @@
 import Docker from "dockerode";
 import os from "os";
+import net from "net";
+import fs from "fs";
+import path from "path";
 
 let dockerInstance: Docker | null = null;
-let dockerCheckAttempted = false;
 let isDockerAvailable = false;
 
-// Dynamic port tracker for sandboxes
+// In-memory dynamic port tracker for sandboxes
 const sandboxPorts: Map<string, { appPort: number; runnerPort: number }> = new Map();
-let nextPortBase = 40000;
+
+function getActiveSandboxesFilePath(): string {
+  const dir = path.join(process.cwd(), "data");
+  if (!fs.existsSync(dir)) {
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+    } catch {}
+  }
+  return path.join(dir, "active-sandboxes.json");
+}
+
+function persistSandboxPorts(replId: string, ports: { appPort: number; runnerPort: number }) {
+  try {
+    const file = getActiveSandboxesFilePath();
+    let data: Record<string, { appPort: number; runnerPort: number }> = {};
+    if (fs.existsSync(file)) {
+      try {
+        data = JSON.parse(fs.readFileSync(file, "utf8"));
+      } catch {}
+    }
+    data[replId] = ports;
+    fs.writeFileSync(file, JSON.stringify(data, null, 2), "utf8");
+  } catch (err: any) {
+    console.warn("[Docker] Error persisting active sandboxes:", err.message);
+  }
+}
+
+function removePersistedSandbox(replId: string) {
+  try {
+    const file = getActiveSandboxesFilePath();
+    if (fs.existsSync(file)) {
+      const data = JSON.parse(fs.readFileSync(file, "utf8"));
+      delete data[replId];
+      fs.writeFileSync(file, JSON.stringify(data, null, 2), "utf8");
+    }
+  } catch {}
+}
+
+export function isPortFree(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.once("error", () => resolve(false));
+    server.once("listening", () => {
+      server.close(() => resolve(true));
+    });
+    server.listen(port, "0.0.0.0");
+  });
+}
+
+export async function findAvailablePort(startPort: number): Promise<number> {
+  let port = startPort;
+  while (!(await isPortFree(port))) {
+    port++;
+  }
+  return port;
+}
 
 export function getDockerClient(): Docker {
   if (dockerInstance) return dockerInstance;
@@ -18,10 +75,8 @@ export function getDockerClient(): Docker {
   if (dockerHost) {
     dockerInstance = new Docker({ host: dockerHost });
   } else if (isWindows) {
-    // Windows named pipe
     dockerInstance = new Docker({ socketPath: "//./pipe/docker_engine" });
   } else {
-    // Linux / macOS socket
     dockerInstance = new Docker({ socketPath: "/var/run/docker.sock" });
   }
 
@@ -76,17 +131,32 @@ export async function createSandbox(params: {
   const docker = getDockerClient();
   const runnerImage = process.env.RUNNER_IMAGE || "vessel-runner:latest";
 
-  // Allocate host ports (favor predictable 3002/3001 for single-container setups)
-  let hostAppPort = 3002;
-  let hostRunnerPort = 3001;
-  if (sandboxPorts.size > 0 && !sandboxPorts.has(replId)) {
-    hostAppPort = nextPortBase++;
-    hostRunnerPort = nextPortBase++;
-  }
-  sandboxPorts.set(replId, { appPort: hostAppPort, runnerPort: hostRunnerPort });
-
   try {
-    // Check if container already exists
+    // 1. Cleanup any conflicting or stale previous vessel containers on the host
+    try {
+      const allContainers = await docker.listContainers({ all: true });
+      for (const c of allContainers) {
+        const isOtherVessel = c.Names.some(
+          (n: string) => n.startsWith("/vessel-") && n !== `/${containerName}`
+        );
+        if (isOtherVessel) {
+          console.log(`[Docker] Stopping conflicting previous vessel container: ${c.Names[0]}`);
+          try {
+            const stale = docker.getContainer(c.Id);
+            if (c.State === "running") {
+              await stale.stop({ t: 2 });
+            }
+            await stale.remove({ force: true });
+          } catch (e: any) {
+            console.warn(`[Docker] Stale container cleanup warning:`, e.message);
+          }
+        }
+      }
+    } catch (err: any) {
+      console.warn("[Docker] Pre-start container listing warning:", err.message);
+    }
+
+    // 2. Check if current container already exists and is running
     try {
       const existing = docker.getContainer(containerName);
       const inspect = await existing.inspect();
@@ -94,10 +164,11 @@ export async function createSandbox(params: {
         const p3000 = inspect.NetworkSettings?.Ports?.["3000/tcp"]?.[0]?.HostPort;
         const p3001 = inspect.NetworkSettings?.Ports?.["3001/tcp"]?.[0]?.HostPort;
         const resolvedPorts = {
-          appPort: p3000 ? parseInt(p3000) : hostAppPort,
-          runnerPort: p3001 ? parseInt(p3001) : hostRunnerPort,
+          appPort: p3000 ? parseInt(p3000) : 3002,
+          runnerPort: p3001 ? parseInt(p3001) : 3001,
         };
         sandboxPorts.set(replId, resolvedPorts);
+        persistSandboxPorts(replId, resolvedPorts);
 
         return {
           replId,
@@ -109,15 +180,19 @@ export async function createSandbox(params: {
       }
       await existing.remove({ force: true });
     } catch {
-      // Container didn't exist, proceed
+      // Container didn't exist, proceed to create
     }
 
-    // Security hardening:
-    // 1. CPU limits: 1 CPU core (1,000,000,000 NanoCPUs)
-    // 2. Memory limit: 512MB
-    // 3. Process limit: 100 PIDs (anti-fork bomb)
-    // 4. Dedicated volume for /workspace
-    // 5. Explicitly NEVER mount /var/run/docker.sock into sandbox
+    // 3. Dynamically allocate free host ports (ensures zero 'port already allocated' errors)
+    let hostAppPort = await findAvailablePort(3002);
+    let hostRunnerPort = await findAvailablePort(3001);
+    if (hostRunnerPort === hostAppPort) {
+      hostRunnerPort = await findAvailablePort(hostAppPort + 1);
+    }
+    sandboxPorts.set(replId, { appPort: hostAppPort, runnerPort: hostRunnerPort });
+    persistSandboxPorts(replId, { appPort: hostAppPort, runnerPort: hostRunnerPort });
+
+    // 4. Create and start isolated Docker container
     const container = await docker.createContainer({
       Image: runnerImage,
       name: containerName,
@@ -159,12 +234,11 @@ export async function createSandbox(params: {
     };
   } catch (err: any) {
     console.warn(`[Docker] Failed to start container for ${replId}:`, err);
-    // Fallback to dev mock mode
     const info: SandboxInfo = {
       replId,
       status: "ERROR",
-      appPort: hostAppPort,
-      runnerPort: hostRunnerPort,
+      appPort: 3002,
+      runnerPort: 3001,
       error: err.message,
     };
     mockSandboxes.set(replId, info);
@@ -188,6 +262,7 @@ export async function stopSandbox(replId: string): Promise<void> {
     await container.stop({ t: 5 });
     await container.remove({ force: true });
     sandboxPorts.delete(replId);
+    removePersistedSandbox(replId);
     console.log(`[Docker] Sandbox container ${containerName} stopped and removed.`);
   } catch (err: any) {
     console.warn(`[Docker] Stop container error for ${replId}:`, err.message);
@@ -221,6 +296,7 @@ export async function getSandboxStatus(replId: string): Promise<SandboxInfo> {
         runnerPort: p3001 ? parseInt(p3001) : 3001,
       };
       sandboxPorts.set(replId, ports);
+      persistSandboxPorts(replId, ports);
     }
 
     return {
@@ -240,5 +316,16 @@ export async function getSandboxStatus(replId: string): Promise<SandboxInfo> {
 }
 
 export function getSandboxPorts(replId: string): { appPort: number; runnerPort: number } {
-  return sandboxPorts.get(replId) || { appPort: 3002, runnerPort: 3001 };
+  const cached = sandboxPorts.get(replId);
+  if (cached) return cached;
+
+  try {
+    const file = getActiveSandboxesFilePath();
+    if (fs.existsSync(file)) {
+      const data = JSON.parse(fs.readFileSync(file, "utf8"));
+      if (data[replId]) return data[replId];
+    }
+  } catch {}
+
+  return { appPort: 3002, runnerPort: 3001 };
 }

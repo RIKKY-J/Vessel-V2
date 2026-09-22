@@ -1,5 +1,7 @@
 const { createServer } = require("http");
 const { parse } = require("url");
+const fs = require("fs");
+const path = require("path");
 const next = require("next");
 const httpProxy = require("http-proxy");
 
@@ -8,6 +10,22 @@ process.env.NODE_ENV = process.env.NODE_ENV || "production";
 const dev = process.env.NODE_ENV === "development";
 const app = next({ dev, dir: __dirname });
 const handle = app.getRequestHandler();
+
+// Helper to look up active runner port for replId or fallback to 3001
+function getActiveRunnerPort(replId) {
+  try {
+    const file = path.join(__dirname, "data", "active-sandboxes.json");
+    if (fs.existsSync(file)) {
+      const data = JSON.parse(fs.readFileSync(file, "utf8"));
+      if (replId && data[replId]?.runnerPort) return data[replId].runnerPort;
+      const keys = Object.keys(data);
+      if (keys.length > 0 && data[keys[keys.length - 1]]?.runnerPort) {
+        return data[keys[keys.length - 1]].runnerPort;
+      }
+    }
+  } catch {}
+  return 3001;
+}
 
 // Create WebSocket and HTTP proxy for runner sandboxes
 const proxy = httpProxy.createProxyServer({
@@ -29,9 +47,11 @@ app.prepare().then(() => {
   const server = createServer((req, res) => {
     const parsedUrl = parse(req.url, true);
 
-    // Proxy Socket.IO HTTP long-polling to local runner container on port 3001
+    // Proxy Socket.IO HTTP long-polling to active runner container
     if (parsedUrl.pathname && parsedUrl.pathname.startsWith("/socket.io/")) {
-      proxy.web(req, res, { target: "http://127.0.0.1:3001" });
+      const replId = parsedUrl.query?.replId;
+      const targetPort = getActiveRunnerPort(replId);
+      proxy.web(req, res, { target: `http://127.0.0.1:${targetPort}` });
       return;
     }
 
@@ -39,12 +59,15 @@ app.prepare().then(() => {
     handle(req, res, parsedUrl);
   });
 
-  // Proxy WebSocket upgrades on port 3000
+  // Proxy WebSocket upgrades on port 3000 directly to active runner container
   server.on("upgrade", (req, socket, head) => {
-    const { pathname } = parse(req.url, true);
+    const parsedUrl = parse(req.url, true);
+    const { pathname, query } = parsedUrl;
 
     if (pathname && pathname.startsWith("/socket.io/")) {
-      proxy.ws(req, socket, head, { target: "http://127.0.0.1:3001" });
+      const replId = query?.replId;
+      const targetPort = getActiveRunnerPort(replId);
+      proxy.ws(req, socket, head, { target: `http://127.0.0.1:${targetPort}` });
       return;
     }
 
