@@ -36,5 +36,8 @@ Thumbs.db
 *.swp
 *.swo
 *.tsbuildinfo
+*.pem
+ssl/
+frontend/ssl/
 
 
