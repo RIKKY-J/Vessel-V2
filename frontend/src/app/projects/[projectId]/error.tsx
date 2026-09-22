@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertCircle } from "lucide-react";
+import { AlertCircle, RefreshCw } from "lucide-react";
 import Link from "next/link";
 
 export default function ProjectWorkspaceError({
@@ -10,6 +10,18 @@ export default function ProjectWorkspaceError({
   error: Error & { digest?: string };
   reset: () => void;
 }) {
+  const isChunkError =
+    error?.message?.toLowerCase().includes("chunk") ||
+    error?.name === "ChunkLoadError";
+
+  const handleRetry = () => {
+    if (isChunkError) {
+      window.location.reload();
+    } else {
+      reset();
+    }
+  };
+
   return (
     <div className="h-screen w-screen bg-[#0B0D11] text-white flex flex-col items-center justify-center p-6 font-sans">
       <div className="max-w-md w-full bg-[#12151B] border border-rose-500/20 rounded-2xl p-8 text-center">
@@ -21,10 +33,11 @@ export default function ProjectWorkspaceError({
 
         <div className="flex items-center justify-center gap-3">
           <button
-            onClick={() => reset()}
-            className="px-4 py-2 bg-[#E73F1E] hover:bg-[#ff4d29] text-white text-xs font-semibold rounded-lg transition"
+            onClick={handleRetry}
+            className="px-4 py-2 bg-[#E73F1E] hover:bg-[#ff4d29] text-white text-xs font-semibold rounded-lg transition inline-flex items-center gap-1.5"
           >
-            Retry Connection
+            <RefreshCw className="w-3.5 h-3.5" />
+            <span>{isChunkError ? "Reload Page" : "Retry Connection"}</span>
           </button>
           <Link
             href="/projects"

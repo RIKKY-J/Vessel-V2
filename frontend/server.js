@@ -3,8 +3,10 @@ const { parse } = require("url");
 const next = require("next");
 const httpProxy = require("http-proxy");
 
-const dev = process.env.NODE_ENV !== "production";
-const app = next({ dev });
+// Enforce production mode by default for PM2 / server deployment
+process.env.NODE_ENV = process.env.NODE_ENV || "production";
+const dev = process.env.NODE_ENV === "development";
+const app = next({ dev, dir: __dirname });
 const handle = app.getRequestHandler();
 
 // Create WebSocket and HTTP proxy for runner sandboxes
@@ -37,12 +39,18 @@ app.prepare().then(() => {
     handle(req, res, parsedUrl);
   });
 
-  // Proxy WebSocket upgrades on port 3000 directly to runner container on port 3001
+  // Proxy WebSocket upgrades on port 3000
   server.on("upgrade", (req, socket, head) => {
     const { pathname } = parse(req.url, true);
 
     if (pathname && pathname.startsWith("/socket.io/")) {
       proxy.ws(req, socket, head, { target: "http://127.0.0.1:3001" });
+      return;
+    }
+
+    // Allow Next.js internal dev HMR websocket if in development mode
+    if (dev && typeof app.getUpgradeHandler === "function") {
+      app.getUpgradeHandler()(req, socket, head);
       return;
     }
 
@@ -52,6 +60,6 @@ app.prepare().then(() => {
   const port = parseInt(process.env.PORT || "3000", 10);
   server.listen(port, "0.0.0.0", (err) => {
     if (err) throw err;
-    console.log(`> Vessel unified server (Next.js + WebSocket Proxy) listening on port ${port}`);
+    console.log(`> Vessel unified server (${dev ? "development" : "production"}) listening on port ${port}`);
   });
 });
